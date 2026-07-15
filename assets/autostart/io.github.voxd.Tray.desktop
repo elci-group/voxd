@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Voxd Tray
+Comment=Show Voxd daemon status in the system tray
+Exec=voxd-tray
+Icon=voxd-tray-running
+Terminal=false
+Categories=Utility;Audio;
+StartupNotify=false
+X-GNOME-Autostart-enabled=true
+X-COSMIC-AutoStart=true

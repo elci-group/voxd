@@ -1,0 +1,221 @@
+#!/usr/bin/env python3
+"""StatusNotifier tray widget for voxd.
+
+This helper targets freedesktop/KDE StatusNotifierItem hosts, which is the
+common tray/status protocol used by modern Linux panels and docks. It uses
+`voxd-cli --json config show` only to discover the configured bind address, then
+checks `/health` directly so merely showing the tray does not auto-start voxd.
+"""
+
+from __future__ import annotations
+
+import json
+import shutil
+import signal
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+from dataclasses import dataclass
+
+import dbus
+import dbus.mainloop.glib
+import dbus.service
+from gi.repository import GLib
+
+
+BUS_NAME = "org.kde.StatusNotifierItem-voxd"
+OBJECT_PATH = "/StatusNotifierItem"
+ITEM_IFACE = "org.kde.StatusNotifierItem"
+PROPS_IFACE = "org.freedesktop.DBus.Properties"
+WATCHER_NAME = "org.kde.StatusNotifierWatcher"
+WATCHER_PATH = "/StatusNotifierWatcher"
+WATCHER_IFACE = "org.kde.StatusNotifierWatcher"
+
+
+@dataclass(frozen=True)
+class TrayState:
+    key: str
+    icon: str
+    title: str
+    tooltip: str
+    status: str = "Active"
+
+
+UNKNOWN = TrayState(
+    key="unknown",
+    icon="voxd-tray-starting",
+    title="Voxd: checking",
+    tooltip="Voxd status is being checked",
+)
+RUNNING = TrayState(
+    key="running",
+    icon="voxd-tray-running",
+    title="Voxd: running",
+    tooltip="Voxd daemon is running",
+)
+STOPPED = TrayState(
+    key="stopped",
+    icon="voxd-tray-stopped",
+    title="Voxd: stopped",
+    tooltip="Voxd daemon is not responding",
+)
+
+
+class VoxdTray(dbus.service.Object):
+    def __init__(self, bus: dbus.SessionBus, cli: str) -> None:
+        self.bus = bus
+        self.cli = cli
+        self.state = UNKNOWN
+        self.bind = None
+        bus_name = dbus.service.BusName(BUS_NAME, bus=bus, do_not_queue=True)
+        super().__init__(bus_name, OBJECT_PATH)
+
+    def register(self) -> None:
+        watcher = self.bus.get_object(WATCHER_NAME, WATCHER_PATH)
+        watcher_iface = dbus.Interface(watcher, WATCHER_IFACE)
+        watcher_iface.RegisterStatusNotifierItem(BUS_NAME)
+
+    def poll(self) -> bool:
+        new_state = self.detect_state()
+        if new_state.key != self.state.key:
+            self.state = new_state
+            self.NewIcon()
+            self.NewTitle()
+            self.NewToolTip()
+        return True
+
+    def detect_state(self) -> TrayState:
+        if self.bind is None:
+            self.bind = self.load_bind()
+        if not self.bind:
+            return STOPPED
+
+        url = f"http://{self.bind}/health"
+        try:
+            with urllib.request.urlopen(url, timeout=1.5) as response:
+                body = json.loads(response.read().decode("utf-8"))
+            if body.get("ok") is True:
+                return RUNNING
+        except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+            return STOPPED
+        return STOPPED
+
+    def load_bind(self) -> str | None:
+        try:
+            proc = subprocess.run(
+                [self.cli, "--json", "config", "show"],
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if proc.returncode != 0:
+            return None
+        try:
+            cfg = json.loads(proc.stdout)
+            return cfg.get("server", {}).get("bind")
+        except json.JSONDecodeError:
+            return None
+
+    @dbus.service.method(PROPS_IFACE, in_signature="ss", out_signature="v")
+    def Get(self, interface: str, prop: str) -> dbus.Variant:
+        return dbus.Variant(self.properties()[prop])
+
+    @dbus.service.method(PROPS_IFACE, in_signature="s", out_signature="a{sv}")
+    def GetAll(self, interface: str) -> dict[str, object]:
+        if interface != ITEM_IFACE:
+            return {}
+        return self.properties()
+
+    @dbus.service.method(PROPS_IFACE, in_signature="ssv", out_signature="")
+    def Set(self, interface: str, prop: str, value: object) -> None:
+        return None
+
+    def properties(self) -> dict[str, object]:
+        return {
+            "Category": "ApplicationStatus",
+            "Id": "voxd",
+            "Title": self.state.title,
+            "Status": self.state.status,
+            "WindowId": dbus.UInt32(0),
+            "IconName": self.state.icon,
+            "IconThemePath": "",
+            "OverlayIconName": "",
+            "AttentionIconName": "voxd-tray-starting",
+            "AttentionMovieName": "",
+            "ToolTip": (
+                "",
+                [],
+                "Voxd",
+                self.state.tooltip,
+            ),
+            "ItemIsMenu": False,
+            "Menu": dbus.ObjectPath("/"),
+        }
+
+    @dbus.service.method(ITEM_IFACE, in_signature="ii", out_signature="")
+    def ContextMenu(self, x: int, y: int) -> None:
+        return None
+
+    @dbus.service.method(ITEM_IFACE, in_signature="ii", out_signature="")
+    def Activate(self, x: int, y: int) -> None:
+        # A click is a refresh. It deliberately does not start or stop voxd.
+        self.bind = None
+        self.poll()
+
+    @dbus.service.method(ITEM_IFACE, in_signature="ii", out_signature="")
+    def SecondaryActivate(self, x: int, y: int) -> None:
+        self.Activate(x, y)
+
+    @dbus.service.method(ITEM_IFACE, in_signature="i", out_signature="")
+    def Scroll(self, delta: int) -> None:
+        return None
+
+    @dbus.service.signal(ITEM_IFACE, signature="")
+    def NewIcon(self) -> None:
+        pass
+
+    @dbus.service.signal(ITEM_IFACE, signature="")
+    def NewTitle(self) -> None:
+        pass
+
+    @dbus.service.signal(ITEM_IFACE, signature="")
+    def NewToolTip(self) -> None:
+        pass
+
+
+def find_cli() -> str:
+    found = shutil.which("voxd-cli")
+    return found or "voxd-cli"
+
+
+def main() -> int:
+    dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+    try:
+        bus = dbus.SessionBus()
+    except dbus.DBusException as exc:
+        print(f"voxd-tray: cannot connect to the session bus: {exc}", file=sys.stderr)
+        return 1
+
+    tray = VoxdTray(bus, find_cli())
+    try:
+        tray.register()
+    except dbus.DBusException as exc:
+        print(f"voxd-tray: no StatusNotifierWatcher available: {exc}", file=sys.stderr)
+        return 1
+
+    tray.poll()
+    GLib.timeout_add_seconds(5, tray.poll)
+
+    loop = GLib.MainLoop()
+    signal.signal(signal.SIGTERM, lambda *_args: loop.quit())
+    signal.signal(signal.SIGINT, lambda *_args: loop.quit())
+    loop.run()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

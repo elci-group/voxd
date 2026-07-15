@@ -1,0 +1,24 @@
+#!/usr/bin/env sh
+set -eu
+
+prefix="${XDG_DATA_HOME:-$HOME/.local/share}"
+bin_dir="$HOME/.local/bin"
+autostart_dir="${XDG_CONFIG_HOME:-$HOME/.config}/autostart"
+
+install -D -m755 tools/voxd-tray "$bin_dir/voxd-tray"
+
+for state in running starting stopped; do
+  install -D -m644 "assets/icons/voxd-tray-$state.svg" \
+    "$prefix/icons/hicolor/scalable/status/voxd-tray-$state.svg"
+done
+
+install -D -m644 assets/applications/io.github.voxd.Tray.desktop \
+  "$prefix/applications/io.github.voxd.Tray.desktop"
+install -D -m644 assets/autostart/io.github.voxd.Tray.desktop \
+  "$autostart_dir/io.github.voxd.Tray.desktop"
+
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+  gtk-update-icon-cache -q "$prefix/icons/hicolor" >/dev/null 2>&1 || true
+fi
+
+echo "Installed voxd-tray to $bin_dir/voxd-tray"

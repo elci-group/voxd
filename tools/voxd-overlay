@@ -1,0 +1,175 @@
+#!/usr/bin/env python3
+"""Siri-style visual indicator for voxd listen mode.
+
+Protocol: read newline state commands from stdin:
+  listening, triggered, speaking, idle
+
+This GTK implementation is dependency-light on COSMIC/Pop/Ubuntu desktops:
+it uses the already-installed PyGObject GTK bindings instead of Tkinter.
+"""
+
+from __future__ import annotations
+
+import argparse
+import math
+import queue
+import sys
+import threading
+import time
+
+import gi
+
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+from gi.repository import Gdk, GLib, Gtk  # noqa: E402
+
+
+SIZE = 300
+FRAME_MS = 16
+
+
+class Indicator(Gtk.Window):
+    def __init__(self, demo: bool = False) -> None:
+        super().__init__(type=Gtk.WindowType.TOPLEVEL)
+        self.set_title("voxd-overlay")
+        self.mode = "listening"
+        self.trigger_until = 0.0
+        self.events: queue.Queue[str] = queue.Queue()
+        self.started = time.monotonic()
+        self.demo = demo
+        self.demo_index = 0
+
+        self.set_default_size(SIZE, SIZE)
+        self.set_decorated(False)
+        self.set_resizable(False)
+        self.set_accept_focus(False)
+        self.set_focus_on_map(False)
+        self.set_keep_above(True)
+        self.set_skip_taskbar_hint(True)
+        self.set_skip_pager_hint(True)
+        self.set_type_hint(Gdk.WindowTypeHint.NOTIFICATION)
+        self.set_app_paintable(True)
+        self.stick()
+        self.move_to_default_position()
+
+        screen = self.get_screen()
+        visual = screen.get_rgba_visual()
+        if visual is not None and screen.is_composited():
+            self.set_visual(visual)
+
+        self.area = Gtk.DrawingArea()
+        self.area.connect("draw", self.draw)
+        self.add(self.area)
+        self.connect("destroy", Gtk.main_quit)
+        self.connect("key-press-event", self.on_key)
+        self.show_all()
+
+        GLib.timeout_add(FRAME_MS, self.tick)
+        if demo:
+            GLib.timeout_add_seconds(2, self.demo_tick)
+
+    def move_to_default_position(self) -> None:
+        display = Gdk.Display.get_default()
+        if not display:
+            return
+        monitor = display.get_primary_monitor() or display.get_monitor(0)
+        if not monitor:
+            return
+        geo = monitor.get_geometry()
+        self.move(geo.x + geo.width - SIZE - 32, geo.y + geo.height - SIZE - 72)
+
+    def on_key(self, _widget: Gtk.Widget, event: Gdk.EventKey) -> bool:
+        if event.keyval == Gdk.KEY_Escape:
+            Gtk.main_quit()
+            return True
+        return False
+
+    def handle(self, event: str) -> None:
+        event = event.strip().lower()
+        if event == "triggered":
+            self.mode = "listening"
+            self.trigger_until = time.monotonic() + 1.5
+        elif event in {"listening", "speaking", "idle"}:
+            self.mode = event
+
+    def tick(self) -> bool:
+        try:
+            while True:
+                self.handle(self.events.get_nowait())
+        except queue.Empty:
+            pass
+        self.area.queue_draw()
+        return True
+
+    def demo_tick(self) -> bool:
+        sequence = ["listening", "triggered", "speaking", "idle"]
+        self.handle(sequence[self.demo_index % len(sequence)])
+        self.demo_index += 1
+        return self.demo
+
+    def draw(self, _widget: Gtk.Widget, cr) -> bool:
+        cr.set_operator(0)  # cairo.OPERATOR_CLEAR without importing cairo
+        cr.paint()
+        cr.set_operator(2)  # cairo.OPERATOR_OVER
+
+        t = time.monotonic() - self.started
+        burst = time.monotonic() < self.trigger_until
+        if burst:
+            freq, amp, base, alpha, color = 3.0, 14.0, 46.0, 0.95, (190, 170, 255)
+        elif self.mode == "speaking":
+            freq, amp, base, alpha, color = 1.6, 6.0, 40.0, 0.70, (120, 205, 255)
+        elif self.mode == "listening":
+            freq, amp, base, alpha, color = 0.8, 4.0, 34.0, 0.50, (80, 170, 255)
+        else:
+            freq, amp, base, alpha, color = 0.6, 2.0, 28.0, 0.25, (120, 140, 160)
+
+        pulse = math.sin(math.tau * freq * t)
+        radius = base + amp * pulse
+        cx = cy = SIZE / 2
+
+        for mult, part_alpha in ((2.3, 0.05), (1.8, 0.08), (1.4, 0.13), (1.15, 0.20)):
+            self.circle(cr, cx, cy, radius * mult, color, alpha * part_alpha)
+        self.circle(cr, cx, cy, radius, color, alpha)
+
+        for index in range(3):
+            angle = t * (freq * 1.5) + index * math.tau / 3
+            orbit = radius * 0.95
+            x = cx + orbit * math.cos(angle)
+            y = cy + orbit * math.sin(angle)
+            self.circle(cr, x, y, 7.0 if burst else 4.0, (255, 255, 255), min(alpha * 0.9, 1.0))
+
+        if burst:
+            ring = radius * 1.6 + (t * 120.0) % 60.0
+            cr.set_source_rgba(1.0, 1.0, 1.0, 0.55)
+            cr.set_line_width(3.0)
+            cr.arc(cx, cy, ring, 0, math.tau)
+            cr.stroke()
+        return False
+
+    def circle(self, cr, x: float, y: float, radius: float, rgb: tuple[int, int, int], alpha: float) -> None:
+        cr.set_source_rgba(rgb[0] / 255.0, rgb[1] / 255.0, rgb[2] / 255.0, max(0.0, min(1.0, alpha)))
+        cr.arc(x, y, radius, 0, math.tau)
+        cr.fill()
+
+
+def stdin_reader(app: Indicator) -> None:
+    for line in sys.stdin:
+        app.events.put(line)
+    if not app.demo:
+        GLib.idle_add(Gtk.main_quit)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--demo", action="store_true", help="cycle states without daemon stdin")
+    args = parser.parse_args()
+
+    app = Indicator(demo=args.demo)
+    if not args.demo:
+        threading.Thread(target=stdin_reader, args=(app,), daemon=True).start()
+    Gtk.main()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
