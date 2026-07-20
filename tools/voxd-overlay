@@ -30,7 +30,10 @@ FRAME_MS = 16
 
 class Indicator(Gtk.Window):
     def __init__(self, demo: bool = False) -> None:
-        super().__init__(type=Gtk.WindowType.TOPLEVEL)
+        # A TOPLEVEL can still receive compositor-side framing on Wayland even
+        # when set_decorated(False) is requested.  POPUP gives the indicator an
+        # unmanaged, genuinely frameless surface on both X11 and Wayland.
+        super().__init__(type=Gtk.WindowType.POPUP)
         self.set_title("voxd-overlay")
         self.mode = "listening"
         self.trigger_until = 0.0
@@ -49,6 +52,14 @@ class Indicator(Gtk.Window):
         self.set_skip_pager_hint(True)
         self.set_type_hint(Gdk.WindowTypeHint.NOTIFICATION)
         self.set_app_paintable(True)
+        self.set_name("voxd-overlay")
+        css = Gtk.CssProvider()
+        css.load_from_data(
+            b"#voxd-overlay { background-color: transparent; border: none; box-shadow: none; }"
+        )
+        Gtk.StyleContext.add_provider_for_screen(
+            Gdk.Screen.get_default(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )
         self.stick()
         self.move_to_default_position()
 
