@@ -81,8 +81,15 @@ impl ElevenClient {
                 "use_speaker_boost": s.use_speaker_boost,
             }
         });
-        let resp = self.http.post(url).header("xi-api-key", &self.key)
-            .header("Accept", "audio/pcm").json(&body).send().await.context("elevenlabs PCM request")?;
+        let resp = self
+            .http
+            .post(url)
+            .header("xi-api-key", &self.key)
+            .header("Accept", "audio/pcm")
+            .json(&body)
+            .send()
+            .await
+            .context("elevenlabs PCM request")?;
         let status = resp.status();
         if !status.is_success() {
             let txt = resp.text().await.unwrap_or_default();

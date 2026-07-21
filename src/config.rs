@@ -46,7 +46,13 @@ pub struct MimicCfg {
 
 impl Default for MimicCfg {
     fn default() -> Self {
-        Self { enabled: false, url: d_mimic_url(), auth_token: String::new(), pv_bin: d_pv_bin(), object_root: d_mimic_objects() }
+        Self {
+            enabled: false,
+            url: d_mimic_url(),
+            auth_token: String::new(),
+            pv_bin: d_pv_bin(),
+            object_root: d_mimic_objects(),
+        }
     }
 }
 
@@ -232,9 +238,15 @@ fn d_stt() -> String {
 fn d_replyvoice() -> String {
     "system".into()
 }
-fn d_mimic_url() -> String { "http://127.0.0.1:17844".into() }
-fn d_pv_bin() -> String { "pv".into() }
-fn d_mimic_objects() -> String { "~/.local/share/mimic/objects".into() }
+fn d_mimic_url() -> String {
+    "http://127.0.0.1:17844".into()
+}
+fn d_pv_bin() -> String {
+    "pv".into()
+}
+fn d_mimic_objects() -> String {
+    "~/.local/share/mimic/objects".into()
+}
 
 // ---- path helpers ---------------------------------------------------------
 

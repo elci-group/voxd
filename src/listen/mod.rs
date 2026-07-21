@@ -190,7 +190,8 @@ async fn handle_utterance(
         match crate::server::synthesize_with_mimic(state, &reply.text, &voice, &settings).await {
             Ok(Some((bytes, _))) => {
                 tokio::task::spawn_blocking(move || play::play_bytes_blocking(&bytes))
-                    .await.context("play join")??;
+                    .await
+                    .context("play join")??;
             }
             Ok(None) => crate::notify::intended_message(&reply.text),
             Err(e) => {

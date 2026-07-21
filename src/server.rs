@@ -316,9 +316,13 @@ pub(crate) async fn synthesize_with_mimic(
     settings: &Settings,
 ) -> Result<Option<(Vec<u8>, usize)>> {
     let mimic = crate::mimic::MimicClient::new(s.http.clone(), &s.cfg.mimic);
-    let plan = mimic.plan(text, voice_id, &s.cfg.elevenlabs.model_id, settings).await?;
+    let plan = mimic
+        .plan(text, voice_id, &s.cfg.elevenlabs.model_id, settings)
+        .await?;
     let (ram_ok, storage_ok) = mimic.admit(&plan).await?;
-    if !ram_ok { return Ok(None); }
+    if !ram_ok {
+        return Ok(None);
+    }
     let eleven = s.eleven()?;
     for span in plan.spans.iter().filter(|span| span.kind == "missing") {
         let pcm = eleven.speak_pcm(&span.text, voice_id, settings).await?;
@@ -433,9 +437,14 @@ async fn handle_assign(State(s): State<Arc<AppState>>, Json(req): Json<AssignReq
                 Ok(pref) if pref.id == req.project_id => {
                     let ts = now_rfc3339();
                     let row = ProjectRow {
-                        id: pref.id, name: pref.name, root_path: pref.root_path,
-                        voice_id: req.voice_id.clone(), label: req.label.clone().unwrap_or_else(|| "assigned".into()),
-                        settings: s.cfg.defaults, created_at: ts.clone(), updated_at: ts,
+                        id: pref.id,
+                        name: pref.name,
+                        root_path: pref.root_path,
+                        voice_id: req.voice_id.clone(),
+                        label: req.label.clone().unwrap_or_else(|| "assigned".into()),
+                        settings: s.cfg.defaults,
+                        created_at: ts.clone(),
+                        updated_at: ts,
                     };
                     if let Err(e) = s.db.insert_project(&row) {
                         return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string());
