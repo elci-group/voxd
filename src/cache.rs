@@ -63,7 +63,11 @@ impl AudioCache {
 
     pub fn path_for(&self, key: &str) -> PathBuf {
         let wav = self.wav_path(key);
-        if wav.exists() { wav } else { self.path(key) }
+        if wav.exists() {
+            wav
+        } else {
+            self.path(key)
+        }
     }
 
     pub fn put_wav(&self, key: &str, bytes: &[u8]) -> Result<PathBuf> {

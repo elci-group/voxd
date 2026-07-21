@@ -315,11 +315,8 @@ pub(crate) async fn synthesize_with_mimic(
     voice_id: &str,
     settings: &Settings,
 ) -> Result<Option<(Vec<u8>, usize)>> {
-    let mimic = crate::mimic::MimicClient::new(
-        s.http.clone(),
-        &s.cfg.mimic,
-        &s.cfg.server.auth_token,
-    );
+    let mimic =
+        crate::mimic::MimicClient::new(s.http.clone(), &s.cfg.mimic, &s.cfg.server.auth_token);
     let plan = mimic
         .plan(text, voice_id, &s.cfg.elevenlabs.model_id, settings)
         .await?;
