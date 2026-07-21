@@ -309,6 +309,9 @@ fn main() -> Result<()> {
         } => {
             let id = to_project_id(&project)?;
             let mut body = json!({ "project_id": id, "voice_id": voice });
+            if looks_like_path(&project) {
+                body["project_path"] = json!(project);
+            }
             if let Some(l) = label {
                 body["label"] = json!(l);
             }

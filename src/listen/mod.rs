@@ -186,7 +186,19 @@ async fn handle_utterance(
     };
     let settings = state.cfg.defaults;
 
-    if reply.low_latency && lc.low_latency {
+    if state.cfg.mimic.enabled {
+        match crate::server::synthesize_with_mimic(state, &reply.text, &voice, &settings).await {
+            Ok(Some((bytes, _))) => {
+                tokio::task::spawn_blocking(move || play::play_bytes_blocking(&bytes))
+                    .await.context("play join")??;
+            }
+            Ok(None) => crate::notify::intended_message(&reply.text),
+            Err(e) => {
+                tracing::warn!(error = %e, "mimic preflight failed; using visual response");
+                crate::notify::intended_message(&reply.text);
+            }
+        }
+    } else if reply.low_latency && lc.low_latency {
         match client.speak_stream(&reply.text, &voice, &settings).await {
             Ok(stream) => {
                 if let Err(e) = audio::play_stream(Box::pin(stream)).await {

@@ -417,6 +417,8 @@ async fn handle_projects(State(s): State<Arc<AppState>>) -> Response {
 #[derive(Deserialize)]
 struct AssignReq {
     project_id: String,
+    #[serde(default)]
+    project_path: Option<String>,
     voice_id: String,
     #[serde(default)]
     label: Option<String>,
@@ -425,6 +427,25 @@ struct AssignReq {
 }
 
 async fn handle_assign(State(s): State<Arc<AppState>>, Json(req): Json<AssignReq>) -> Response {
+    if matches!(s.db.get_project_by_id(&req.project_id), Ok(None)) {
+        if let Some(path) = req.project_path.as_deref() {
+            match project::resolve(std::path::Path::new(path)) {
+                Ok(pref) if pref.id == req.project_id => {
+                    let ts = now_rfc3339();
+                    let row = ProjectRow {
+                        id: pref.id, name: pref.name, root_path: pref.root_path,
+                        voice_id: req.voice_id.clone(), label: req.label.clone().unwrap_or_else(|| "assigned".into()),
+                        settings: s.cfg.defaults, created_at: ts.clone(), updated_at: ts,
+                    };
+                    if let Err(e) = s.db.insert_project(&row) {
+                        return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string());
+                    }
+                }
+                Ok(_) => return err(StatusCode::BAD_REQUEST, "project id/path mismatch"),
+                Err(e) => return err(StatusCode::BAD_REQUEST, &e.to_string()),
+            }
+        }
+    }
     let new_settings = match s.db.get_project_by_id(&req.project_id) {
         Ok(Some(row)) => Some(row.settings.apply(&req.settings)),
         Ok(None) => return err(StatusCode::NOT_FOUND, "unknown project id"),
