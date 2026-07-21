@@ -47,7 +47,9 @@ impl AudioCache {
         if !self.enabled {
             return None;
         }
-        fs::read(self.path(key)).ok()
+        fs::read(self.wav_path(key))
+            .or_else(|_| fs::read(self.path(key)))
+            .ok()
     }
 
     pub fn put(&self, key: &str, bytes: &[u8]) -> Result<PathBuf> {
@@ -60,7 +62,8 @@ impl AudioCache {
     }
 
     pub fn path_for(&self, key: &str) -> PathBuf {
-        self.path(key)
+        let wav = self.wav_path(key);
+        if wav.exists() { wav } else { self.path(key) }
     }
 
     pub fn put_wav(&self, key: &str, bytes: &[u8]) -> Result<PathBuf> {

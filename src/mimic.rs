@@ -58,11 +58,15 @@ pub struct MimicClient {
 }
 
 impl MimicClient {
-    pub fn new(http: Client, cfg: &MimicCfg) -> Self {
+    pub fn new(http: Client, cfg: &MimicCfg, fallback_token: &str) -> Self {
         Self {
             http,
             base: cfg.url.trim_end_matches('/').into(),
-            token: cfg.auth_token.clone(),
+            token: if cfg.auth_token.is_empty() {
+                fallback_token.to_owned()
+            } else {
+                cfg.auth_token.clone()
+            },
             object_root: expand_tilde(&cfg.object_root),
             pv_bin: cfg.pv_bin.clone(),
         }
