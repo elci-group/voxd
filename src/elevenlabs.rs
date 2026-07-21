@@ -68,6 +68,29 @@ impl ElevenClient {
         Ok(bytes.to_vec())
     }
 
+    /// Synthesize raw 16 kHz mono PCM for Mimic span injection.
+    pub async fn speak_pcm(&self, text: &str, voice_id: &str, s: &Settings) -> Result<Vec<u8>> {
+        let url = format!("{BASE}/text-to-speech/{voice_id}?output_format=pcm_16000");
+        let body = json!({
+            "text": text,
+            "model_id": self.model,
+            "voice_settings": {
+                "stability": s.stability,
+                "similarity_boost": s.similarity_boost,
+                "style": s.style,
+                "use_speaker_boost": s.use_speaker_boost,
+            }
+        });
+        let resp = self.http.post(url).header("xi-api-key", &self.key)
+            .header("Accept", "audio/pcm").json(&body).send().await.context("elevenlabs PCM request")?;
+        let status = resp.status();
+        if !status.is_success() {
+            let txt = resp.text().await.unwrap_or_default();
+            bail!("elevenlabs PCM HTTP {status}: {txt}");
+        }
+        Ok(resp.bytes().await.context("read PCM bytes")?.to_vec())
+    }
+
     /// List available voices (premade + cloned) for the account.
     pub async fn list_voices(&self) -> Result<Vec<VoiceInfo>> {
         let url = format!("{BASE}/voices");

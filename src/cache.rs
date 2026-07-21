@@ -39,6 +39,8 @@ impl AudioCache {
         self.dir.join(format!("{key}.mp3"))
     }
 
+    fn wav_path(&self, key: &str) -> PathBuf { self.dir.join(format!("{key}.wav")) }
+
     pub fn get(&self, key: &str) -> Option<Vec<u8>> {
         if !self.enabled {
             return None;
@@ -57,6 +59,13 @@ impl AudioCache {
 
     pub fn path_for(&self, key: &str) -> PathBuf {
         self.path(key)
+    }
+
+    pub fn put_wav(&self, key: &str, bytes: &[u8]) -> Result<PathBuf> {
+        let p = self.wav_path(key);
+        fs::write(&p, bytes).with_context(|| format!("write {}", p.display()))?;
+        if self.enabled { self.evict_if_needed(); }
+        Ok(p)
     }
 
     pub fn total_bytes(&self) -> u64 {

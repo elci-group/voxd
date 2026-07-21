@@ -265,7 +265,8 @@ voxd-cli listen start
 - `~/.local/share/voxd/voxd.pid`, `voxd.log` — pidfile + daemon log
 - `~/.cache/voxd/*.mp3` — synthesized audio cache
 
-## Client of note
+## Codex skill
 
-The `speechsummary` skill calls `voxd-cli speak --system` to read a short
-declarative summary aloud at the end of a completed task, on the unifying voice.
+The `voxd` skill uses `voxd-cli` directly for speech, daemon management, voice
+assignment, and listening controls. It calls `voxd-cli speak --system` to read a
+short declarative summary aloud at the end of each substantive direct-chat turn.

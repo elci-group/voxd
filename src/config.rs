@@ -26,6 +26,28 @@ pub struct Config {
     pub cache: CacheCfg,
     #[serde(default)]
     pub listen: ListenCfg,
+    #[serde(default)]
+    pub mimic: MimicCfg,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MimicCfg {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "d_mimic_url")]
+    pub url: String,
+    #[serde(default)]
+    pub auth_token: String,
+    #[serde(default = "d_pv_bin")]
+    pub pv_bin: String,
+    #[serde(default = "d_mimic_objects")]
+    pub object_root: String,
+}
+
+impl Default for MimicCfg {
+    fn default() -> Self {
+        Self { enabled: false, url: d_mimic_url(), auth_token: String::new(), pv_bin: d_pv_bin(), object_root: d_mimic_objects() }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -210,6 +232,9 @@ fn d_stt() -> String {
 fn d_replyvoice() -> String {
     "system".into()
 }
+fn d_mimic_url() -> String { "http://127.0.0.1:17844".into() }
+fn d_pv_bin() -> String { "pv".into() }
+fn d_mimic_objects() -> String { "~/.local/share/mimic/objects".into() }
 
 // ---- path helpers ---------------------------------------------------------
 
@@ -299,6 +324,11 @@ impl Config {
             "listen.low_latency" => self.listen.low_latency = parse_bool(key, value)?,
             "listen.stt_model" => self.listen.stt_model = value.to_string(),
             "listen.reply_voice" => self.listen.reply_voice = value.to_string(),
+            "mimic.enabled" => self.mimic.enabled = parse_bool(key, value)?,
+            "mimic.url" => self.mimic.url = value.to_string(),
+            "mimic.auth_token" => self.mimic.auth_token = value.to_string(),
+            "mimic.pv_bin" => self.mimic.pv_bin = value.to_string(),
+            "mimic.object_root" => self.mimic.object_root = value.to_string(),
             _ => bail!("unknown config key {key}"),
         }
         Ok(())

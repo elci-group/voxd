@@ -9,6 +9,8 @@ pub mod cache;
 pub mod config;
 pub mod elevenlabs;
 pub mod listen;
+pub mod mimic;
+pub mod notify;
 pub mod play;
 pub mod project;
 pub mod server;
