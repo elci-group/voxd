@@ -263,7 +263,9 @@ fn main() -> Result<()> {
             }
             if !no_play && !server_play {
                 if let Some(p) = resp["audio_path"].as_str() {
-                    voxd::play::play_blocking(std::path::Path::new(p))?;
+                    if !p.is_empty() {
+                        voxd::play::play_blocking(std::path::Path::new(p))?;
+                    }
                 }
             }
         }

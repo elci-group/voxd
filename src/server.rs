@@ -188,6 +188,8 @@ struct SpeakResp {
     cached: bool,
     chars: usize,
     audio_path: String,
+    visual_only: bool,
+    provider_chars: usize,
 }
 
 async fn handle_speak(State(s): State<Arc<AppState>>, Json(req): Json<SpeakReq>) -> Response {
@@ -251,26 +253,45 @@ async fn speak_core(s: &AppState, req: SpeakReq) -> Result<SpeakResp> {
     } else {
         None
     };
-    let cached = match cached {
+    let (cached, audio_path, visual_only, provider_chars) = match cached {
         Some(bytes) => {
             std::fs::write(&audio_path, &bytes).ok();
-            true
+            (true, audio_path, false, 0)
         }
         None => {
-            let client = s.eleven()?;
-            let bytes = client.speak(&text, &voice_id, &settings).await?;
-            if s.cfg.cache.enabled {
-                s.cache.put(&key, &bytes)?;
+            if s.cfg.mimic.enabled {
+                match synthesize_with_mimic(s, &text, &voice_id, &settings).await {
+                    Ok(Some((bytes, provider_chars))) => {
+                        let path = s.cache.put_wav(&key, &bytes)?;
+                        (false, path, false, provider_chars)
+                    }
+                    Ok(None) => {
+                        crate::notify::intended_message(&text);
+                        (false, std::path::PathBuf::new(), true, 0)
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "mimic preflight failed; blocking TTS");
+                        crate::notify::intended_message(&text);
+                        (false, std::path::PathBuf::new(), true, 0)
+                    }
+                }
             } else {
-                std::fs::write(&audio_path, &bytes)?;
+                let client = s.eleven()?;
+                let bytes = client.speak(&text, &voice_id, &settings).await?;
+                let path = if s.cfg.cache.enabled {
+                    s.cache.put(&key, &bytes)?
+                } else {
+                    std::fs::write(&audio_path, &bytes)?;
+                    audio_path
+                };
+                (false, path, false, chars)
             }
-            false
         }
     };
 
     s.db.log_utterance(project_id.as_deref(), &voice_id, chars, cached)?;
 
-    if req.play {
+    if req.play && !visual_only {
         play::spawn_play(&audio_path);
     }
 
@@ -281,7 +302,30 @@ async fn speak_core(s: &AppState, req: SpeakReq) -> Result<SpeakResp> {
         cached,
         chars,
         audio_path: audio_path.display().to_string(),
+        visual_only,
+        provider_chars,
     })
+}
+
+/// Execute the mandatory Mimic manifest and pv admission flow. `None` means
+/// RAM was denied and the caller must use a visual-only response.
+pub(crate) async fn synthesize_with_mimic(
+    s: &AppState,
+    text: &str,
+    voice_id: &str,
+    settings: &Settings,
+) -> Result<Option<(Vec<u8>, usize)>> {
+    let mimic = crate::mimic::MimicClient::new(s.http.clone(), &s.cfg.mimic);
+    let plan = mimic.plan(text, voice_id, &s.cfg.elevenlabs.model_id, settings).await?;
+    let (ram_ok, storage_ok) = mimic.admit(&plan).await?;
+    if !ram_ok { return Ok(None); }
+    let eleven = s.eleven()?;
+    for span in plan.spans.iter().filter(|span| span.kind == "missing") {
+        let pcm = eleven.speak_pcm(&span.text, voice_id, settings).await?;
+        mimic.inject(&plan.plan_id, &span.span_id, pcm).await?;
+    }
+    let audio = mimic.compose(&plan.plan_id, storage_ok).await?;
+    Ok(Some((audio, plan.missing_chars)))
 }
 
 /// Resolve a project by path (or cwd), allocating and persisting a voice on
