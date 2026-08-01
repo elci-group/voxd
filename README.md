@@ -1,9 +1,10 @@
 # voxd
 
-An enterprise-style ElevenLabs text-to-speech daemon. It allocates and persists a
-distinct **voice + personality per project**, and keeps a single **unifying system
-voice** for general / conversational responses. Ships as a daemon (`voxd`) plus a
-thin client (`voxd-cli`).
+A multi-provider text-to-speech and speech-to-speech daemon with ElevenLabs and
+Groq support. It allocates and persists a distinct **voice + personality per
+project**, and keeps a single **unifying system voice** for general /
+conversational responses. Ships as a daemon (`voxd`) plus a thin client
+(`voxd-cli`).
 
 - Per-project voice is auto-allocated once and persisted (SQLite), so each repo
   keeps its own sound across restarts.
@@ -39,6 +40,18 @@ model_id = "eleven_multilingual_v2"
 output_format = "mp3_44100_128"
 # api_key = "..."        # optional; env ELEVENLABS_API_KEY / ~/.bashrc win
 
+[groq]
+tts_model = "canopylabs/orpheus-v1-english"
+voice = "troy"
+output_format = "wav"    # Orpheus currently supports WAV
+sample_rate = 48000
+stt_model = "whisper-large-v3-turbo"
+# api_key = "..."        # optional; env GROQ_API_KEY / ~/.bashrc win
+
+[providers]
+tts = "elevenlabs"       # "elevenlabs" or "groq"
+stt = "elevenlabs"       # selected independently for the STS loop
+
 [system_voice]
 voice_id = "21m00Tcm4TlvDq8ikWAM"   # Rachel — the single unifying voice
 label = "system"
@@ -59,8 +72,21 @@ enabled = true
 max_mb = 512
 ```
 
-API key resolution order: `ELEVENLABS_API_KEY` env → `export` line in
-`~/.bashrc` → `[elevenlabs].api_key`. The key is never logged.
+API key resolution order is provider environment variable → matching `export`
+line in `~/.bashrc` → provider config: `ELEVENLABS_API_KEY` /
+`[elevenlabs].api_key` and `GROQ_API_KEY` / `[groq].api_key`. Keys are never
+logged.
+
+Enable Groq for both ordinary TTS and the complete speech-to-speech loop:
+
+```bash
+voxd-cli config set providers.tts groq
+voxd-cli config set providers.stt groq
+voxd-cli config set groq.voice hannah       # optional
+```
+
+Restart the daemon after changing providers. TTS and STT are independent, so a
+mixed configuration such as Groq Whisper STT with ElevenLabs TTS is supported.
 
 ## Usage
 
@@ -78,7 +104,7 @@ voxd-cli logs | voxd-cli stop
 
 A "personality" is a project row's `{voice_id, label, stability,
 similarity_boost, style, use_speaker_boost}` (text is spoken verbatim — no LLM).
-`speed` is stored for forward compatibility and is not sent on the wire.
+`speed` is sent to Groq Orpheus and retained for ElevenLabs compatibility.
 
 ## Settings GUI
 
@@ -160,9 +186,11 @@ stable per repo regardless of which subdirectory you call from.
 
 On first speak for an unseen project, a voice is chosen deterministically:
 `index = sha256(project_id) mod pool_len`, linear-probing past voices already in
-use (and the system voice). The pool is `[pool].voices` if set, else the cached
-ElevenLabs voice list, else — for restricted keys without `voices_read` — a
-built-in set of canonical premade voices. `assign` overrides at any time.
+use (and the system voice). For ElevenLabs, the pool is `[pool].voices` if set,
+else the cached/live voice list, else a built-in premade fallback. For Groq, the
+pool is the model's published Orpheus voices (or valid entries from
+`[pool].voices`). `assign` overrides at any time. Existing incompatible voice
+ids fall back to `[groq].voice` when Groq TTS is active.
 
 ## HTTP API (127.0.0.1, `Authorization: Bearer <token>`)
 
@@ -182,12 +210,14 @@ built-in set of canonical premade voices. `assign` overrides at any time.
 ## Always-listening speech-to-speech
 
 `voxd` can run a closed voice loop: it captures the mic continuously, wakes on
-**"Hey Voxd"**, transcribes the command with ElevenLabs Scribe, routes it
-through a built-in intent router, and speaks the reply on the unifying voice.
+**"Hey Voxd"**, transcribes the command with the configured STT provider, routes
+it through a built-in intent router, and speaks the reply with the configured
+TTS provider.
 
 ```
 mic -> capture (ffmpeg, s16le/16k) -> RMS VAD -> utterance
-     -> STT (Scribe) -> wake match -> IntentRouter -> TTS -> ffplay
+     -> STT (Scribe or Groq Whisper) -> wake match -> IntentRouter
+     -> TTS (ElevenLabs or Groq Orpheus) -> ffplay
 ```
 
 ```bash
@@ -202,9 +232,10 @@ Built-in intents (no LLM, fully local): current **time**, **date**, **uptime**,
 end the loop. Anything else gets a "You said: …" fallback. The router sits
 behind a `Responder` trait so an LLM/kimi backend can be added later.
 
-Latency modes (per ElevenLabs): short replies use **streaming TTS**
-(`/text-to-speech/.../stream` piped to ffplay) for fast time-to-first-audio;
-longer readouts use the **batched STT+TTS** path (synthesize → cache → play).
+With ElevenLabs TTS, short replies use **streaming TTS** for fast
+time-to-first-audio; longer readouts use the batched path. Groq Orpheus replies
+use WAV synthesis; inputs over its 200-character limit are split at natural
+boundaries and joined into one lossless WAV before playback or caching.
 
 ### Config — `[listen]` in `config.toml`
 
@@ -219,7 +250,7 @@ min_utterance_ms = 400      # shorter utterances dropped locally, no STT call
 silence_ms = 700            # trailing silence that ends an utterance
 max_utterance_secs = 12
 low_latency = true          # streaming TTS for short replies
-stt_model = "scribe_v1"
+stt_model = "scribe_v1"    # used when providers.stt = "elevenlabs"
 reply_voice = "system"      # "system" or a voice id
 ```
 

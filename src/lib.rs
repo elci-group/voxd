@@ -61,11 +61,7 @@ impl Settings {
     pub fn cache_fragment(&self) -> String {
         format!(
             "{:.4}|{:.4}|{:.4}|{:.4}|{}",
-            self.stability,
-            self.similarity_boost,
-            self.style,
-            self.speed,
-            self.use_speaker_boost
+            self.stability, self.similarity_boost, self.style, self.speed, self.use_speaker_boost
         )
     }
 }
