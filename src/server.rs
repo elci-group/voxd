@@ -46,6 +46,14 @@ impl AppState {
                     cfg.groq.tts_model
                 ));
             }
+            if ![8000, 16000, 22050, 24000, 32000, 44100, 48000]
+                .contains(&cfg.groq.sample_rate)
+            {
+                return Err(anyhow!(
+                    "unsupported Groq sample rate {}; expected 8000, 16000, 22050, 24000, 32000, 44100, or 48000",
+                    cfg.groq.sample_rate
+                ));
+            }
         }
         let elevenlabs_key = resolve_elevenlabs_api_key(&cfg);
         let groq_key = resolve_groq_api_key(&cfg);
@@ -333,9 +341,14 @@ async fn speak_core(s: &AppState, req: SpeakReq) -> Result<SpeakResp> {
     let voice_id = s.resolve_tts_voice(&voice_id);
 
     // Cache lookup / synthesis.
-    let key = s
-        .cache
-        .key(&text, &voice_id, s.tts_model(), s.tts_format(), &settings);
+    let cache_model = format!("{}:{}", s.cfg.providers.tts, s.tts_model());
+    let key = s.cache.key(
+        &text,
+        &voice_id,
+        &cache_model,
+        s.tts_format(),
+        &settings,
+    );
     let audio_path = s.cache.path_for(&key);
 
     let cached = if !req.no_cache {

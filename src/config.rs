@@ -420,7 +420,7 @@ impl Config {
                 }
                 self.groq.output_format = value.to_string();
             }
-            "groq.sample_rate" => self.groq.sample_rate = parse_u32(key, value)?,
+            "groq.sample_rate" => self.groq.sample_rate = parse_groq_sample_rate(key, value)?,
             "groq.stt_model" => self.groq.stt_model = value.to_string(),
             "groq.api_key" => {
                 self.groq.api_key = if value.trim().is_empty() {
@@ -486,9 +486,13 @@ pub fn load_or_init(path: &Path) -> Result<Config> {
         save_config(path, &cfg)?;
         wrote = true;
     }
-    // Backfill newly-added sections (e.g. [listen]) so the on-disk file reflects
-    // current defaults and remains user-tunable.
-    if !raw.contains("[listen]") && !wrote {
+    // Backfill newly-added sections so the on-disk file reflects current
+    // defaults and remains user-tunable.
+    if ["[listen]", "[groq]", "[providers]"]
+        .iter()
+        .any(|section| !raw.contains(section))
+        && !wrote
+    {
         save_config(path, &cfg)?;
     }
     Ok(cfg)
@@ -540,10 +544,11 @@ fn key_from_bashrc(name: &str) -> Option<String> {
         if let Some(rest) = t.strip_prefix("export") {
             let rest = rest.trim();
             if let Some(kv) = rest.strip_prefix(name) {
-                let kv = kv.trim_start().strip_prefix('=')?.trim();
-                let v = kv.trim_matches('"').trim_matches('\'').to_string();
-                if !v.is_empty() {
-                    return Some(v);
+                if let Some(kv) = kv.trim_start().strip_prefix('=') {
+                    let v = kv.trim().trim_matches('"').trim_matches('\'').to_string();
+                    if !v.is_empty() {
+                        return Some(v);
+                    }
                 }
             }
         }
@@ -575,6 +580,15 @@ fn parse_u32(key: &str, value: &str) -> Result<u32> {
     value
         .parse::<u32>()
         .with_context(|| format!("{key} must be an unsigned integer"))
+}
+
+fn parse_groq_sample_rate(key: &str, value: &str) -> Result<u32> {
+    let sample_rate = parse_u32(key, value)?;
+    if [8000, 16000, 22050, 24000, 32000, 44100, 48000].contains(&sample_rate) {
+        Ok(sample_rate)
+    } else {
+        bail!("{key} must be one of 8000, 16000, 22050, 24000, 32000, 44100, or 48000")
+    }
 }
 
 fn parse_u64(key: &str, value: &str) -> Result<u64> {

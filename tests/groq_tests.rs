@@ -22,6 +22,7 @@ fn groq_provider_and_settings_are_configurable() {
     assert_eq!(cfg.groq.voice, "hannah");
     assert_eq!(cfg.groq.sample_rate, 24_000);
     assert!(cfg.set_key("groq.output_format", "mp3").is_err());
+    assert!(cfg.set_key("groq.sample_rate", "12345").is_err());
     assert!(cfg.set_key("providers.tts", "unknown").is_err());
 }
 
