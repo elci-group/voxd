@@ -23,7 +23,15 @@ CONFIG_FIELDS = [
     ("Pid file", "server.pid_file"),
     ("ElevenLabs model", "elevenlabs.model_id"),
     ("Output format", "elevenlabs.output_format"),
-    ("API key", "elevenlabs.api_key"),
+    ("ElevenLabs API key", "elevenlabs.api_key"),
+    ("TTS provider", "providers.tts"),
+    ("STT provider", "providers.stt"),
+    ("Groq TTS model", "groq.tts_model"),
+    ("Groq voice", "groq.voice"),
+    ("Groq output format", "groq.output_format"),
+    ("Groq sample rate", "groq.sample_rate"),
+    ("Groq STT model", "groq.stt_model"),
+    ("Groq API key", "groq.api_key"),
     ("System voice id", "system_voice.voice_id"),
     ("System label", "system_voice.label"),
     ("Default stability", "defaults.stability"),
@@ -110,7 +118,12 @@ class VoxdGui(tk.Tk):
                 widget = ttk.Checkbutton(inner, variable=var)
             else:
                 var = tk.StringVar()
-                widget = ttk.Entry(inner, textvariable=var, width=58, show="*" if key == "elevenlabs.api_key" else "")
+                widget = ttk.Entry(
+                    inner,
+                    textvariable=var,
+                    width=58,
+                    show="*" if key.endswith("api_key") else "",
+                )
             widget.grid(row=row, column=1, sticky=tk.EW, pady=4)
             self.fields[key] = var
         inner.columnconfigure(1, weight=1)

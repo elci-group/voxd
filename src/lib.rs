@@ -20,9 +20,8 @@ pub mod voices;
 
 use serde::{Deserialize, Serialize};
 
-/// TTS "personality" settings. `speed` is stored for forward compatibility but
-/// is NOT sent on the wire (ElevenLabs voice_settings accepts stability,
-/// similarity_boost, style and use_speaker_boost).
+/// TTS "personality" settings. ElevenLabs uses the voice-quality fields while
+/// Groq Orpheus additionally sends `speed`.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub struct Settings {
     pub stability: f32,
@@ -56,13 +55,17 @@ impl Settings {
         }
     }
 
-    /// Canonical string of the settings that are actually sent to the API.
-    /// Used as part of the audio cache key so the cache stays consistent with
-    /// what is synthesized.
+    /// Canonical provider-independent cache fragment. Some providers ignore a
+    /// subset of fields, but every field that can affect synthesized audio is
+    /// represented so cached speech is never reused with the wrong settings.
     pub fn cache_fragment(&self) -> String {
         format!(
-            "{:.4}|{:.4}|{:.4}|{}",
-            self.stability, self.similarity_boost, self.style, self.use_speaker_boost
+            "{:.4}|{:.4}|{:.4}|{:.4}|{}",
+            self.stability,
+            self.similarity_boost,
+            self.style,
+            self.speed,
+            self.use_speaker_boost
         )
     }
 }
