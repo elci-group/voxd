@@ -17,6 +17,10 @@ pub struct Config {
     #[serde(default)]
     pub elevenlabs: ElevenCfg,
     #[serde(default)]
+    pub groq: GroqCfg,
+    #[serde(default)]
+    pub providers: ProviderCfg,
+    #[serde(default)]
     pub system_voice: SystemVoice,
     #[serde(default)]
     pub defaults: Settings,
@@ -28,6 +32,57 @@ pub struct Config {
     pub listen: ListenCfg,
     #[serde(default)]
     pub mimic: MimicCfg,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SpeechProvider {
+    Elevenlabs,
+    Groq,
+}
+
+impl Default for SpeechProvider {
+    fn default() -> Self {
+        Self::Elevenlabs
+    }
+}
+
+impl std::str::FromStr for SpeechProvider {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "elevenlabs" | "eleven" => Ok(Self::Elevenlabs),
+            "groq" => Ok(Self::Groq),
+            _ => bail!("speech provider must be 'elevenlabs' or 'groq'"),
+        }
+    }
+}
+
+impl std::fmt::Display for SpeechProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Elevenlabs => f.write_str("elevenlabs"),
+            Self::Groq => f.write_str("groq"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderCfg {
+    #[serde(default)]
+    pub tts: SpeechProvider,
+    #[serde(default)]
+    pub stt: SpeechProvider,
+}
+
+impl Default for ProviderCfg {
+    fn default() -> Self {
+        Self {
+            tts: SpeechProvider::Elevenlabs,
+            stt: SpeechProvider::Elevenlabs,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -89,6 +144,35 @@ impl Default for ElevenCfg {
         Self {
             model_id: d_model(),
             output_format: d_fmt(),
+            api_key: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroqCfg {
+    #[serde(default = "d_groq_tts_model")]
+    pub tts_model: String,
+    #[serde(default = "d_groq_voice")]
+    pub voice: String,
+    #[serde(default = "d_groq_fmt")]
+    pub output_format: String,
+    #[serde(default = "d_groq_sample_rate")]
+    pub sample_rate: u32,
+    #[serde(default = "d_groq_stt_model")]
+    pub stt_model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+}
+
+impl Default for GroqCfg {
+    fn default() -> Self {
+        Self {
+            tts_model: d_groq_tts_model(),
+            voice: d_groq_voice(),
+            output_format: d_groq_fmt(),
+            sample_rate: d_groq_sample_rate(),
+            stt_model: d_groq_stt_model(),
             api_key: None,
         }
     }
@@ -192,6 +276,21 @@ fn d_model() -> String {
 }
 fn d_fmt() -> String {
     "mp3_44100_128".into()
+}
+fn d_groq_tts_model() -> String {
+    "canopylabs/orpheus-v1-english".into()
+}
+fn d_groq_voice() -> String {
+    "troy".into()
+}
+fn d_groq_fmt() -> String {
+    "wav".into()
+}
+fn d_groq_sample_rate() -> u32 {
+    48000
+}
+fn d_groq_stt_model() -> String {
+    "whisper-large-v3-turbo".into()
 }
 fn d_sysvoice() -> String {
     DEFAULT_SYSTEM_VOICE.into()
@@ -313,6 +412,25 @@ impl Config {
                     Some(value.to_string())
                 };
             }
+            "groq.tts_model" => self.groq.tts_model = value.to_string(),
+            "groq.voice" => self.groq.voice = value.to_string(),
+            "groq.output_format" => {
+                if value != "wav" {
+                    bail!("groq.output_format must be 'wav'");
+                }
+                self.groq.output_format = value.to_string();
+            }
+            "groq.sample_rate" => self.groq.sample_rate = parse_u32(key, value)?,
+            "groq.stt_model" => self.groq.stt_model = value.to_string(),
+            "groq.api_key" => {
+                self.groq.api_key = if value.trim().is_empty() {
+                    None
+                } else {
+                    Some(value.to_string())
+                };
+            }
+            "providers.tts" => self.providers.tts = value.parse()?,
+            "providers.stt" => self.providers.stt = value.parse()?,
             "system_voice.voice_id" => self.system_voice.voice_id = value.to_string(),
             "system_voice.label" => self.system_voice.label = value.to_string(),
             "defaults.stability" => self.defaults.stability = parse_f32(key, value)?,

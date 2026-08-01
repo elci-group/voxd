@@ -25,6 +25,16 @@ fn put_then_get_round_trips() {
 }
 
 #[test]
+fn lossless_wav_is_reused_before_mp3() {
+    let tmp = tempfile::tempdir().unwrap();
+    let c = AudioCache::new(tmp.path().to_path_buf(), true, 512).unwrap();
+    c.put("abc", b"mp3").unwrap();
+    let wav = c.put_wav("abc", b"RIFF-lossless").unwrap();
+    assert_eq!(c.get("abc"), Some(b"RIFF-lossless".to_vec()));
+    assert_eq!(c.path_for("abc"), wav);
+}
+
+#[test]
 fn disabled_cache_never_hits() {
     let tmp = tempfile::tempdir().unwrap();
     let c = AudioCache::new(tmp.path().to_path_buf(), false, 512).unwrap();
