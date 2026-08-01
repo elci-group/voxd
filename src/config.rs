@@ -34,17 +34,12 @@ pub struct Config {
     pub mimic: MimicCfg,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum SpeechProvider {
+    #[default]
     Elevenlabs,
     Groq,
-}
-
-impl Default for SpeechProvider {
-    fn default() -> Self {
-        Self::Elevenlabs
-    }
 }
 
 impl std::str::FromStr for SpeechProvider {

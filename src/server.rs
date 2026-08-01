@@ -46,9 +46,7 @@ impl AppState {
                     cfg.groq.tts_model
                 ));
             }
-            if ![8000, 16000, 22050, 24000, 32000, 44100, 48000]
-                .contains(&cfg.groq.sample_rate)
-            {
+            if ![8000, 16000, 22050, 24000, 32000, 44100, 48000].contains(&cfg.groq.sample_rate) {
                 return Err(anyhow!(
                     "unsupported Groq sample rate {}; expected 8000, 16000, 22050, 24000, 32000, 44100, or 48000",
                     cfg.groq.sample_rate
@@ -342,13 +340,9 @@ async fn speak_core(s: &AppState, req: SpeakReq) -> Result<SpeakResp> {
 
     // Cache lookup / synthesis.
     let cache_model = format!("{}:{}", s.cfg.providers.tts, s.tts_model());
-    let key = s.cache.key(
-        &text,
-        &voice_id,
-        &cache_model,
-        s.tts_format(),
-        &settings,
-    );
+    let key = s
+        .cache
+        .key(&text, &voice_id, &cache_model, s.tts_format(), &settings);
     let audio_path = s.cache.path_for(&key);
 
     let cached = if !req.no_cache {
