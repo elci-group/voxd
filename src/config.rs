@@ -507,26 +507,39 @@ fn gen_token() -> String {
 }
 
 /// Resolve the ElevenLabs API key: env → ~/.bashrc export → config file.
+pub fn resolve_elevenlabs_api_key(cfg: &Config) -> Option<String> {
+    resolve_env_or_bashrc("ELEVENLABS_API_KEY")
+        .or_else(|| cfg.elevenlabs.api_key.clone().filter(|k| !k.is_empty()))
+}
+
+/// Resolve the Groq API key: env → ~/.bashrc export → config file.
+pub fn resolve_groq_api_key(cfg: &Config) -> Option<String> {
+    resolve_env_or_bashrc("GROQ_API_KEY")
+        .or_else(|| cfg.groq.api_key.clone().filter(|k| !k.is_empty()))
+}
+
+/// Backward-compatible alias for the original ElevenLabs-only resolver.
 pub fn resolve_api_key(cfg: &Config) -> Option<String> {
-    if let Ok(k) = std::env::var("ELEVENLABS_API_KEY") {
+    resolve_elevenlabs_api_key(cfg)
+}
+
+fn resolve_env_or_bashrc(name: &str) -> Option<String> {
+    if let Ok(k) = std::env::var(name) {
         if !k.is_empty() {
             return Some(k);
         }
     }
-    if let Some(k) = key_from_bashrc() {
-        return Some(k);
-    }
-    cfg.elevenlabs.api_key.clone().filter(|k| !k.is_empty())
+    key_from_bashrc(name)
 }
 
-fn key_from_bashrc() -> Option<String> {
+fn key_from_bashrc(name: &str) -> Option<String> {
     let path = home().join(".bashrc");
     let raw = fs::read_to_string(path).ok()?;
     for line in raw.lines() {
         let t = line.trim();
         if let Some(rest) = t.strip_prefix("export") {
             let rest = rest.trim();
-            if let Some(kv) = rest.strip_prefix("ELEVENLABS_API_KEY") {
+            if let Some(kv) = rest.strip_prefix(name) {
                 let kv = kv.trim_start().strip_prefix('=')?.trim();
                 let v = kv.trim_matches('"').trim_matches('\'').to_string();
                 if !v.is_empty() {

@@ -12,8 +12,7 @@ use anyhow::{Context, Result};
 use tokio::sync::{oneshot, watch};
 
 use crate::audio;
-use crate::config::ListenCfg;
-use crate::elevenlabs::ElevenClient;
+use crate::config::{ListenCfg, SpeechProvider};
 use crate::play;
 use crate::server::AppState;
 use crate::Settings;
@@ -156,9 +155,8 @@ async fn handle_utterance(
     responder: IntentRouter,
     utt: Vec<i16>,
 ) -> Result<bool> {
-    let client = state.eleven()?;
     let wav = audio::wav_from_pcm(&utt, lc.sample_rate);
-    let text = client.transcribe(wav, "audio/wav", &lc.stt_model).await?;
+    let text = state.transcribe(wav, "audio/wav").await?;
     let text = text.trim().to_string();
     if text.is_empty() {
         return Ok(false);
@@ -179,14 +177,15 @@ async fn handle_utterance(
         .await
         .context("responder join")?;
 
-    let voice = if lc.reply_voice == "system" {
+    let requested_voice = if lc.reply_voice == "system" {
         state.cfg.system_voice.voice_id.clone()
     } else {
         lc.reply_voice.clone()
     };
+    let voice = state.resolve_tts_voice(&requested_voice);
     let settings = state.cfg.defaults;
 
-    if state.cfg.mimic.enabled {
+    if state.cfg.mimic.enabled && state.cfg.providers.tts == SpeechProvider::Elevenlabs {
         match crate::server::synthesize_with_mimic(state, &reply.text, &voice, &settings).await {
             Ok(Some((bytes, _))) => {
                 tokio::task::spawn_blocking(move || play::play_bytes_blocking(&bytes))
@@ -199,7 +198,11 @@ async fn handle_utterance(
                 crate::notify::intended_message(&reply.text);
             }
         }
-    } else if reply.low_latency && lc.low_latency {
+    } else if state.cfg.providers.tts == SpeechProvider::Elevenlabs
+        && reply.low_latency
+        && lc.low_latency
+    {
+        let client = state.eleven()?;
         match client.speak_stream(&reply.text, &voice, &settings).await {
             Ok(stream) => {
                 if let Err(e) = audio::play_stream(Box::pin(stream)).await {
@@ -208,23 +211,23 @@ async fn handle_utterance(
             }
             Err(e) => {
                 tracing::warn!(error = %e, "streaming synth failed; falling back to batched");
-                speak_batched(&client, &reply.text, &voice, &settings).await?;
+                speak_batched(state, &reply.text, &voice, &settings).await?;
             }
         }
     } else {
-        speak_batched(&client, &reply.text, &voice, &settings).await?;
+        speak_batched(state, &reply.text, &voice, &settings).await?;
     }
 
     Ok(reply.stop)
 }
 
 async fn speak_batched(
-    client: &ElevenClient,
+    state: &AppState,
     text: &str,
     voice: &str,
     settings: &Settings,
 ) -> Result<()> {
-    let bytes = client.speak(text, voice, settings).await?;
+    let bytes = state.synthesize(text, voice, settings).await?;
     tokio::task::spawn_blocking(move || play::play_bytes_blocking(&bytes))
         .await
         .context("play join")??;

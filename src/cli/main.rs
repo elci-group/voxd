@@ -13,7 +13,7 @@ use voxd::project;
 #[command(
     name = "voxd-cli",
     version,
-    about = "Client for the voxd ElevenLabs TTS daemon"
+    about = "Client for the voxd multi-provider speech daemon"
 )]
 struct Args {
     /// Path to config.toml (also used to reach the daemon).
@@ -54,7 +54,7 @@ enum Command {
         #[arg(long)]
         server_play: bool,
     },
-    /// List available ElevenLabs voices.
+    /// List voices available from the configured TTS provider.
     Voices,
     /// List project → voice bindings.
     Projects,
@@ -373,6 +373,14 @@ fn main() -> Result<()> {
                     v["system_voice"].as_str().unwrap_or("")
                 );
                 println!("model:         {}", v["model"].as_str().unwrap_or(""));
+                println!(
+                    "tts_provider:  {}",
+                    v["tts_provider"].as_str().unwrap_or("")
+                );
+                println!(
+                    "stt_provider:  {}",
+                    v["stt_provider"].as_str().unwrap_or("")
+                );
             }
         }
         Command::Config { .. } => unreachable!("handled before API setup"),

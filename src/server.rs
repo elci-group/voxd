@@ -16,14 +16,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::alloc::allocate_voice;
 use crate::cache::AudioCache;
-use crate::config::{resolve_api_key, Config};
+use crate::config::{resolve_elevenlabs_api_key, resolve_groq_api_key, Config, SpeechProvider};
 use crate::elevenlabs::ElevenClient;
+use crate::groq::GroqClient;
 use crate::state::Db;
 use crate::{play, project, ProjectRow, Settings, SettingsPatch};
 
 pub struct AppState {
     pub(crate) cfg: Config,
-    api_key: Option<String>,
+    elevenlabs_key: Option<String>,
+    groq_key: Option<String>,
     http: reqwest::Client,
     db: Db,
     cache: AudioCache,
@@ -33,7 +35,20 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(cfg: Config) -> Result<Self> {
-        let api_key = resolve_api_key(&cfg);
+        if cfg.providers.tts == SpeechProvider::Groq {
+            if cfg.groq.output_format != "wav" {
+                return Err(anyhow!("Groq Orpheus requires groq.output_format = 'wav'"));
+            }
+            if !crate::groq::supports_voice(&cfg.groq.tts_model, &cfg.groq.voice) {
+                return Err(anyhow!(
+                    "Groq voice '{}' is not valid for model '{}'",
+                    cfg.groq.voice,
+                    cfg.groq.tts_model
+                ));
+            }
+        }
+        let elevenlabs_key = resolve_elevenlabs_api_key(&cfg);
+        let groq_key = resolve_groq_api_key(&cfg);
         let http = reqwest::Client::builder()
             .user_agent("voxd/0.1")
             .build()
@@ -42,7 +57,8 @@ impl AppState {
         let cache = AudioCache::new(cfg.cache_dir(), cfg.cache.enabled, cfg.cache.max_mb)?;
         Ok(Self {
             cfg,
-            api_key,
+            elevenlabs_key,
+            groq_key,
             http,
             db,
             cache,
@@ -52,7 +68,7 @@ impl AppState {
     }
 
     pub(crate) fn eleven(&self) -> Result<ElevenClient> {
-        let key = self.api_key.clone().ok_or_else(|| {
+        let key = self.elevenlabs_key.clone().ok_or_else(|| {
             anyhow!("no ElevenLabs API key (set ELEVENLABS_API_KEY or configure one)")
         })?;
         Ok(ElevenClient::new(
@@ -61,6 +77,71 @@ impl AppState {
             self.cfg.elevenlabs.model_id.clone(),
             self.cfg.elevenlabs.output_format.clone(),
         ))
+    }
+
+    pub(crate) fn groq(&self) -> Result<GroqClient> {
+        let key = self
+            .groq_key
+            .clone()
+            .ok_or_else(|| anyhow!("no Groq API key (set GROQ_API_KEY or configure one)"))?;
+        Ok(GroqClient::new(
+            self.http.clone(),
+            key,
+            self.cfg.groq.tts_model.clone(),
+            self.cfg.groq.output_format.clone(),
+            self.cfg.groq.sample_rate,
+            self.cfg.groq.stt_model.clone(),
+        ))
+    }
+
+    pub(crate) fn tts_model(&self) -> &str {
+        match self.cfg.providers.tts {
+            SpeechProvider::Elevenlabs => &self.cfg.elevenlabs.model_id,
+            SpeechProvider::Groq => &self.cfg.groq.tts_model,
+        }
+    }
+
+    pub(crate) fn tts_format(&self) -> &str {
+        match self.cfg.providers.tts {
+            SpeechProvider::Elevenlabs => &self.cfg.elevenlabs.output_format,
+            SpeechProvider::Groq => &self.cfg.groq.output_format,
+        }
+    }
+
+    pub(crate) fn resolve_tts_voice(&self, requested: &str) -> String {
+        match self.cfg.providers.tts {
+            SpeechProvider::Elevenlabs => requested.to_string(),
+            SpeechProvider::Groq => {
+                if crate::groq::supports_voice(&self.cfg.groq.tts_model, requested) {
+                    requested.to_string()
+                } else {
+                    self.cfg.groq.voice.clone()
+                }
+            }
+        }
+    }
+
+    pub(crate) async fn synthesize(
+        &self,
+        text: &str,
+        voice: &str,
+        settings: &Settings,
+    ) -> Result<Vec<u8>> {
+        match self.cfg.providers.tts {
+            SpeechProvider::Elevenlabs => self.eleven()?.speak(text, voice, settings).await,
+            SpeechProvider::Groq => self.groq()?.speak(text, voice, settings).await,
+        }
+    }
+
+    pub(crate) async fn transcribe(&self, audio: Vec<u8>, mime: &str) -> Result<String> {
+        match self.cfg.providers.stt {
+            SpeechProvider::Elevenlabs => {
+                self.eleven()?
+                    .transcribe(audio, mime, &self.cfg.listen.stt_model)
+                    .await
+            }
+            SpeechProvider::Groq => self.groq()?.transcribe(audio, mime).await,
+        }
     }
 }
 
@@ -153,9 +234,21 @@ async fn handle_status(State(s): State<Arc<AppState>>) -> impl IntoResponse {
         "utterances": utterances,
         "cache_bytes": cache_bytes,
         "cache_dir": s.cfg.cache_dir().display().to_string(),
-        "key_present": s.api_key.is_some(),
-        "system_voice": s.cfg.system_voice.voice_id,
-        "model": s.cfg.elevenlabs.model_id,
+        "key_present": match s.cfg.providers.tts {
+            SpeechProvider::Elevenlabs => s.elevenlabs_key.is_some(),
+            SpeechProvider::Groq => s.groq_key.is_some(),
+        },
+        "elevenlabs_key_present": s.elevenlabs_key.is_some(),
+        "groq_key_present": s.groq_key.is_some(),
+        "tts_provider": s.cfg.providers.tts.to_string(),
+        "stt_provider": s.cfg.providers.stt.to_string(),
+        "system_voice": s.resolve_tts_voice(&s.cfg.system_voice.voice_id),
+        "model": s.tts_model(),
+        "tts_model": s.tts_model(),
+        "stt_model": match s.cfg.providers.stt {
+            SpeechProvider::Elevenlabs => &s.cfg.listen.stt_model,
+            SpeechProvider::Groq => &s.cfg.groq.stt_model,
+        },
     }))
 }
 
@@ -237,15 +330,12 @@ async fn speak_core(s: &AppState, req: SpeakReq) -> Result<SpeakResp> {
             let set = row.settings.apply(&req.settings);
             (v, l, set, Some(row.id.clone()))
         };
+    let voice_id = s.resolve_tts_voice(&voice_id);
 
     // Cache lookup / synthesis.
-    let key = s.cache.key(
-        &text,
-        &voice_id,
-        s.cfg.elevenlabs.model_id.as_str(),
-        s.cfg.elevenlabs.output_format.as_str(),
-        &settings,
-    );
+    let key = s
+        .cache
+        .key(&text, &voice_id, s.tts_model(), s.tts_format(), &settings);
     let audio_path = s.cache.path_for(&key);
 
     let cached = if !req.no_cache {
@@ -259,7 +349,7 @@ async fn speak_core(s: &AppState, req: SpeakReq) -> Result<SpeakResp> {
             (true, audio_path, false, 0)
         }
         None => {
-            if s.cfg.mimic.enabled {
+            if s.cfg.mimic.enabled && s.cfg.providers.tts == SpeechProvider::Elevenlabs {
                 match synthesize_with_mimic(s, &text, &voice_id, &settings).await {
                     Ok(Some((bytes, provider_chars))) => {
                         let path = s.cache.put_wav(&key, &bytes)?;
@@ -276,9 +366,10 @@ async fn speak_core(s: &AppState, req: SpeakReq) -> Result<SpeakResp> {
                     }
                 }
             } else {
-                let client = s.eleven()?;
-                let bytes = client.speak(&text, &voice_id, &settings).await?;
-                let path = if s.cfg.cache.enabled {
+                let bytes = s.synthesize(&text, &voice_id, &settings).await?;
+                let path = if s.cfg.providers.tts == SpeechProvider::Groq {
+                    s.cache.put_wav(&key, &bytes)?
+                } else if s.cfg.cache.enabled {
                     s.cache.put(&key, &bytes)?
                 } else {
                     std::fs::write(&audio_path, &bytes)?;
@@ -346,28 +437,38 @@ async fn get_or_allocate(s: &AppState, path: Option<&str>) -> Result<ProjectRow>
         return Ok(row);
     }
 
-    // Build pool: configured → cached voices → live fetch (best-effort) →
-    // built-in premade fallback (handles keys without the voices_read scope).
-    let sys = s.cfg.system_voice.voice_id.clone();
+    // Build the active provider's pool. Groq publishes a fixed Orpheus voice
+    // list; ElevenLabs may use configured, cached, live, or built-in voices.
+    let sys = s.resolve_tts_voice(&s.cfg.system_voice.voice_id);
     let mut pool = s.cfg.pool.voices.clone();
-    if pool.is_empty() {
-        pool = s.db.cached_voice_ids()?;
-    }
-    if pool.is_empty() {
-        match s.eleven() {
-            Ok(client) => match client.list_voices().await {
-                Ok(voices) => {
-                    s.db.upsert_voices(&voices)?;
-                    pool = voices.into_iter().map(|v| v.voice_id).collect();
-                }
+    if s.cfg.providers.tts == SpeechProvider::Groq {
+        pool.retain(|voice| crate::groq::supports_voice(&s.cfg.groq.tts_model, voice));
+        if pool.is_empty() {
+            pool = crate::groq::voices(&s.cfg.groq.tts_model)
+                .into_iter()
+                .map(|voice| voice.voice_id)
+                .collect();
+        }
+    } else {
+        if pool.is_empty() {
+            pool = s.db.cached_voice_ids()?;
+        }
+        if pool.is_empty() {
+            match s.eleven() {
+                Ok(client) => match client.list_voices().await {
+                    Ok(voices) => {
+                        s.db.upsert_voices(&voices)?;
+                        pool = voices.into_iter().map(|v| v.voice_id).collect();
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "list_voices failed; using built-in pool");
+                        pool = crate::voices::builtin_ids_excluding(&sys);
+                    }
+                },
                 Err(e) => {
-                    tracing::warn!(error = %e, "list_voices failed; using built-in pool");
+                    tracing::warn!(error = %e, "no api key for list_voices; using built-in pool");
                     pool = crate::voices::builtin_ids_excluding(&sys);
                 }
-            },
-            Err(e) => {
-                tracing::warn!(error = %e, "no api key for list_voices; using built-in pool");
-                pool = crate::voices::builtin_ids_excluding(&sys);
             }
         }
     }
@@ -399,6 +500,9 @@ async fn get_or_allocate(s: &AppState, path: Option<&str>) -> Result<ProjectRow>
 }
 
 async fn handle_voices(State(s): State<Arc<AppState>>) -> Response {
+    if s.cfg.providers.tts == SpeechProvider::Groq {
+        return Json(crate::groq::voices(&s.cfg.groq.tts_model)).into_response();
+    }
     if let Ok(client) = s.eleven() {
         match client.list_voices().await {
             Ok(v) => {
@@ -542,14 +646,7 @@ async fn listen_transcribe(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("audio/wav")
         .to_string();
-    let client = match s.eleven() {
-        Ok(c) => c,
-        Err(e) => return err(StatusCode::SERVICE_UNAVAILABLE, &e.to_string()),
-    };
-    match client
-        .transcribe(body.to_vec(), &mime, &s.cfg.listen.stt_model)
-        .await
-    {
+    match s.transcribe(body.to_vec(), &mime).await {
         Ok(text) => Json(serde_json::json!({ "text": text })).into_response(),
         Err(e) => err(StatusCode::BAD_GATEWAY, &e.to_string()),
     }

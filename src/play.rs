@@ -23,14 +23,19 @@ pub fn play_blocking(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Synthesize-then-play helper for callers that already hold mp3 bytes and want
-/// to await completion (writes a temp file, plays it, removes it).
+/// Synthesize-then-play helper for callers that already hold audio bytes and
+/// want to await completion (writes a temp file, plays it, removes it).
 pub fn play_bytes_blocking(bytes: &[u8]) -> Result<()> {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    let path = std::env::temp_dir().join(format!("voxd_utt_{nanos}.mp3"));
+    let extension = if bytes.starts_with(b"RIFF") {
+        "wav"
+    } else {
+        "mp3"
+    };
+    let path = std::env::temp_dir().join(format!("voxd_utt_{nanos}.{extension}"));
     std::fs::write(&path, bytes).with_context(|| format!("write {}", path.display()))?;
     let res = play_blocking(&path);
     let _ = std::fs::remove_file(&path);

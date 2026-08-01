@@ -8,7 +8,7 @@ use clap::Parser;
 use voxd::config::{default_config_path, default_state_dir, load_or_init};
 
 #[derive(Parser, Debug)]
-#[command(name = "voxd", version, about = "ElevenLabs TTS daemon")]
+#[command(name = "voxd", version, about = "Multi-provider TTS and STS daemon")]
 struct Args {
     /// Run as a detached background daemon (setsid + log file).
     #[arg(long)]

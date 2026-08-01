@@ -1,4 +1,4 @@
-//! voxd — enterprise ElevenLabs TTS daemon.
+//! voxd — local multi-provider speech daemon.
 //!
 //! Allocates and persists a distinct voice + personality per project, plus a
 //! single unifying system voice for general / conversational responses.
@@ -8,6 +8,7 @@ pub mod audio;
 pub mod cache;
 pub mod config;
 pub mod elevenlabs;
+pub mod groq;
 pub mod listen;
 pub mod mimic;
 pub mod notify;
