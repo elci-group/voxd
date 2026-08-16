@@ -70,6 +70,11 @@ voices = []             # empty -> live list, else built-in premade fallback
 dir = "/home/sal/.cache/voxd"
 enabled = true
 max_mb = 512
+
+[recap]
+enabled = true
+poll_interval_secs = 2
+claude_projects_dir = "~/.claude/projects"
 ```
 
 API key resolution order is provider environment variable → matching `export`
@@ -289,11 +294,38 @@ voxd-cli listen start
 - Capture is suppressed while a reply plays to avoid self-trigger; headphones
   are still recommended.
 
+## Automatic recap narration
+
+The daemon runs a background watcher that speaks harness-generated "recap"
+text on its own — no `voxd-cli speak` call, hook, or LLM effort required. A
+recap is content the harness already produces to summarize what happened
+while you weren't watching; this is a passive delivery channel for it, not a
+new kind of summary.
+
+**Claude Code** is the only harness that currently emits one: its `away_summary`
+system line (the `/recap` feature, `CLAUDE_CODE_ENABLE_AWAY_SUMMARY`),
+appended to `~/.claude/projects/<project>/<session>.jsonl` whenever a session
+was unfocused. voxd tails every session file under `[recap].claude_projects_dir`
+(default `~/.claude/projects`), and on each new `away_summary` line speaks its
+`content` with the project voice for the session's `cwd` (falling back to the
+system voice outside a known project). Byte offsets are persisted to
+`~/.local/share/voxd/recap_state.json` so restarts never replay old recaps,
+and a session file seen for the first time starts from its current end, so
+turning the watcher on doesn't dump history.
+
+Other installed harnesses (Codex, Devin, ...) were checked and don't expose an
+equivalent passive idle/away artifact today — their session logs record every
+turn, not a distinct "you were away" summary — so they still rely on the
+manual `voxd-cli speak` skill described below. Adding a harness here means
+adding a `poll_*` function in `src/recap.rs`; disable the whole watcher with
+`voxd-cli config set recap.enabled false`.
+
 ## Files
 
 - `~/.config/voxd/config.toml` — config + auth token
 - `~/.local/share/voxd/state.db` — SQLite (projects, voice cache, utterance log)
 - `~/.local/share/voxd/voxd.pid`, `voxd.log` — pidfile + daemon log
+- `~/.local/share/voxd/recap_state.json` — recap-watcher file offsets
 - `~/.cache/voxd/*.mp3` — synthesized audio cache
 
 ## Codex skill
