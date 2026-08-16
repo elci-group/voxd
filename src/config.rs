@@ -32,6 +32,8 @@ pub struct Config {
     pub listen: ListenCfg,
     #[serde(default)]
     pub mimic: MimicCfg,
+    #[serde(default)]
+    pub recap: RecapCfg,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -102,6 +104,27 @@ impl Default for MimicCfg {
             auth_token: String::new(),
             pv_bin: d_pv_bin(),
             object_root: d_mimic_objects(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecapCfg {
+    /// Watch supported harnesses' session logs and speak recaps automatically.
+    #[serde(default = "d_true")]
+    pub enabled: bool,
+    #[serde(default = "d_recap_poll")]
+    pub poll_interval_secs: u64,
+    /// Claude Code session-log root; auto-detected if it does not exist.
+    #[serde(default = "d_claude_projects_dir")]
+    pub claude_projects_dir: String,
+}
+impl Default for RecapCfg {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            poll_interval_secs: d_recap_poll(),
+            claude_projects_dir: d_claude_projects_dir(),
         }
     }
 }
@@ -341,6 +364,12 @@ fn d_pv_bin() -> String {
 fn d_mimic_objects() -> String {
     "~/.local/share/mimic/objects".into()
 }
+fn d_recap_poll() -> u64 {
+    2
+}
+fn d_claude_projects_dir() -> String {
+    "~/.claude/projects".into()
+}
 
 // ---- path helpers ---------------------------------------------------------
 
@@ -454,6 +483,9 @@ impl Config {
             "mimic.auth_token" => self.mimic.auth_token = value.to_string(),
             "mimic.pv_bin" => self.mimic.pv_bin = value.to_string(),
             "mimic.object_root" => self.mimic.object_root = value.to_string(),
+            "recap.enabled" => self.recap.enabled = parse_bool(key, value)?,
+            "recap.poll_interval_secs" => self.recap.poll_interval_secs = parse_u64(key, value)?,
+            "recap.claude_projects_dir" => self.recap.claude_projects_dir = value.to_string(),
             _ => bail!("unknown config key {key}"),
         }
         Ok(())
@@ -483,7 +515,7 @@ pub fn load_or_init(path: &Path) -> Result<Config> {
     }
     // Backfill newly-added sections so the on-disk file reflects current
     // defaults and remains user-tunable.
-    if ["[listen]", "[groq]", "[providers]"]
+    if ["[listen]", "[groq]", "[providers]", "[recap]"]
         .iter()
         .any(|section| !raw.contains(section))
         && !wrote

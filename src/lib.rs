@@ -14,6 +14,7 @@ pub mod mimic;
 pub mod notify;
 pub mod play;
 pub mod project;
+pub mod recap;
 pub mod server;
 pub mod state;
 pub mod voices;

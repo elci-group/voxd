@@ -154,6 +154,7 @@ impl AppState {
 pub async fn run(cfg: Config) -> Result<()> {
     let bind = cfg.server.bind.clone();
     let state = Arc::new(AppState::new(cfg)?);
+    crate::recap::spawn(state.clone());
 
     let protected = Router::new()
         .route("/speak", post(handle_speak))
@@ -289,6 +290,29 @@ struct SpeakResp {
     audio_path: String,
     visual_only: bool,
     provider_chars: usize,
+}
+
+/// Speak harness-detected recap text without going through HTTP. Used by the
+/// background recap watcher (see `crate::recap`); best-effort, so callers just
+/// log a failure rather than propagate it.
+pub(crate) async fn speak_recap(
+    s: &AppState,
+    text: String,
+    project_path: Option<String>,
+) -> Result<()> {
+    let req = SpeakReq {
+        text,
+        system: project_path.is_none(),
+        project_path,
+        project_id: None,
+        voice_id: None,
+        label: None,
+        play: true,
+        no_cache: false,
+        settings: SettingsPatch::default(),
+    };
+    speak_core(s, req).await?;
+    Ok(())
 }
 
 async fn handle_speak(State(s): State<Arc<AppState>>, Json(req): Json<SpeakReq>) -> Response {
