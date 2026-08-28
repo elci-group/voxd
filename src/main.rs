@@ -20,13 +20,19 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .with_writer(std::io::stderr)
-        .init();
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    let fmt_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
+    let registry = tracing_subscriber::registry().with(env_filter).with(fmt_layer);
+
+    // Optional structured JSONL sink for mimic efficiency tracing/benchmarking.
+    match voxd::trace::JsonlLayer::from_env() {
+        Some(jsonl) => registry.with(jsonl).init(),
+        None => registry.init(),
+    }
 
     let args = Args::parse();
     let cfg_path = args.config.unwrap_or_else(default_config_path);

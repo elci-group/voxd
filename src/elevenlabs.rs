@@ -8,6 +8,15 @@ use crate::{Settings, VoiceInfo};
 
 const BASE: &str = "https://api.elevenlabs.io/v1";
 
+/// Real ElevenLabs endpoint, unless overridden for testing/benchmarking.
+///
+/// `VOXD_ELEVENLABS_BASE_URL` is a test-only seam (used by
+/// `tools/mimic_bench.py` to redirect span synthesis to a local mock server)
+/// and is never set in normal operation.
+fn base_url() -> String {
+    std::env::var("VOXD_ELEVENLABS_BASE_URL").unwrap_or_else(|_| BASE.to_string())
+}
+
 #[derive(Clone)]
 pub struct ElevenClient {
     http: Client,
@@ -36,7 +45,8 @@ impl ElevenClient {
     /// Synthesize `text` with `voice_id`. Returns mp3 bytes.
     pub async fn speak(&self, text: &str, voice_id: &str, s: &Settings) -> Result<Vec<u8>> {
         let url = format!(
-            "{BASE}/text-to-speech/{voice_id}?output_format={}",
+            "{}/text-to-speech/{voice_id}?output_format={}",
+            base_url(),
             self.fmt
         );
         let body = json!({
@@ -70,7 +80,7 @@ impl ElevenClient {
 
     /// Synthesize raw 16 kHz mono PCM for Mimic span injection.
     pub async fn speak_pcm(&self, text: &str, voice_id: &str, s: &Settings) -> Result<Vec<u8>> {
-        let url = format!("{BASE}/text-to-speech/{voice_id}?output_format=pcm_16000");
+        let url = format!("{}/text-to-speech/{voice_id}?output_format=pcm_16000", base_url());
         let body = json!({
             "text": text,
             "model_id": self.model,
@@ -100,7 +110,7 @@ impl ElevenClient {
 
     /// List available voices (premade + cloned) for the account.
     pub async fn list_voices(&self) -> Result<Vec<VoiceInfo>> {
-        let url = format!("{BASE}/voices");
+        let url = format!("{}/voices", base_url());
         let resp = self
             .http
             .get(&url)
@@ -119,7 +129,7 @@ impl ElevenClient {
 
     /// Transcribe audio bytes to text via ElevenLabs Scribe.
     pub async fn transcribe(&self, audio: Vec<u8>, mime: &str, stt_model: &str) -> Result<String> {
-        let url = format!("{BASE}/speech-to-text");
+        let url = format!("{}/speech-to-text", base_url());
         let file_name = if mime.contains("wav") {
             "audio.wav"
         } else {
@@ -161,7 +171,8 @@ impl ElevenClient {
         s: &Settings,
     ) -> Result<impl futures_util::Stream<Item = Result<bytes::Bytes, reqwest::Error>>> {
         let url = format!(
-            "{BASE}/text-to-speech/{voice_id}/stream?output_format={}&optimize_streaming_latency=3",
+            "{}/text-to-speech/{voice_id}/stream?output_format={}&optimize_streaming_latency=3",
+            base_url(),
             self.fmt
         );
         let body = json!({

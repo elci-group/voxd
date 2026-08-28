@@ -53,6 +53,9 @@ enum Command {
         /// Play on the server instead of locally.
         #[arg(long)]
         server_play: bool,
+        /// Stream mode: speak each line from stdin as it arrives (dictation).
+        #[arg(long)]
+        stream: bool,
     },
     /// List voices available from the configured TTS provider.
     Voices,
@@ -227,44 +230,59 @@ fn main() -> Result<()> {
             no_play,
             no_cache,
             server_play,
+            stream,
         } => {
-            let t = gather_text(&text)?;
-            let mut body =
-                json!({ "text": t, "system": system, "no_cache": no_cache, "play": server_play });
-            if let Some(p) = project {
-                if looks_like_path(&p) {
-                    body["project_path"] = json!(p);
-                } else {
-                    body["project_id"] = json!(p);
-                }
-            }
-            if let Some(v) = voice {
-                body["voice_id"] = json!(v);
-            }
-            if let Some(l) = label {
-                body["label"] = json!(l);
-            }
-            let resp = api.post("/speak", &body)?;
-            if args.json {
-                println!("{}", serde_json::to_string_pretty(&resp)?);
+            if stream {
+                speak_stream(
+                    &api,
+                    system,
+                    project,
+                    voice,
+                    label,
+                    no_play,
+                    no_cache,
+                    server_play,
+                    args.json,
+                )?;
             } else {
-                println!(
-                    "{} ({}){} · {} chars · {}",
-                    resp["voice_id"].as_str().unwrap_or("?"),
-                    resp["label"].as_str().unwrap_or("?"),
-                    if resp["cached"].as_bool().unwrap_or(false) {
-                        " [cached]"
+                let t = gather_text(&text)?;
+                let mut body =
+                    json!({ "text": t, "system": system, "no_cache": no_cache, "play": server_play });
+                if let Some(p) = project {
+                    if looks_like_path(&p) {
+                        body["project_path"] = json!(p);
                     } else {
-                        ""
-                    },
-                    resp["chars"].as_u64().unwrap_or(0),
-                    resp["audio_path"].as_str().unwrap_or("?"),
-                );
-            }
-            if !no_play && !server_play {
-                if let Some(p) = resp["audio_path"].as_str() {
-                    if !p.is_empty() {
-                        voxd::play::play_blocking(std::path::Path::new(p))?;
+                        body["project_id"] = json!(p);
+                    }
+                }
+                if let Some(v) = voice {
+                    body["voice_id"] = json!(v);
+                }
+                if let Some(l) = label {
+                    body["label"] = json!(l);
+                }
+                let resp = api.post("/speak", &body)?;
+                if args.json {
+                    println!("{}", serde_json::to_string_pretty(&resp)?);
+                } else {
+                    println!(
+                        "{} ({}){} · {} chars · {}",
+                        resp["voice_id"].as_str().unwrap_or("?"),
+                        resp["label"].as_str().unwrap_or("?"),
+                        if resp["cached"].as_bool().unwrap_or(false) {
+                            " [cached]"
+                        } else {
+                            ""
+                        },
+                        resp["chars"].as_u64().unwrap_or(0),
+                        resp["audio_path"].as_str().unwrap_or("?"),
+                    );
+                }
+                if !no_play && !server_play {
+                    if let Some(p) = resp["audio_path"].as_str() {
+                        if !p.is_empty() {
+                            voxd::play::play_blocking(std::path::Path::new(p))?;
+                        }
                     }
                 }
             }
@@ -444,6 +462,84 @@ fn gather_text(parts: &[String]) -> Result<String> {
         bail!("no text: pass arguments or pipe via stdin");
     }
     Ok(buf)
+}
+
+fn speak_stream(
+    api: &Api,
+    system: bool,
+    project: Option<String>,
+    voice: Option<String>,
+    label: Option<String>,
+    no_play: bool,
+    no_cache: bool,
+    server_play: bool,
+    raw_json: bool,
+) -> Result<()> {
+    use std::io::{BufRead, BufReader};
+    
+    let stdin = std::io::stdin();
+    let reader = BufReader::new(stdin);
+    
+    for line in reader.lines() {
+        let line = line.context("read line")?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        
+        let mut body = json!({ 
+            "text": trimmed, 
+            "system": system, 
+            "no_cache": no_cache, 
+            "play": server_play 
+        });
+        
+        if let Some(ref p) = project {
+            if looks_like_path(p) {
+                body["project_path"] = json!(p);
+            } else {
+                body["project_id"] = json!(p);
+            }
+        }
+        if let Some(ref v) = voice {
+            body["voice_id"] = json!(v);
+        }
+        if let Some(ref l) = label {
+            body["label"] = json!(l);
+        }
+        
+        match api.post("/speak", &body) {
+            Ok(resp) => {
+                if raw_json {
+                    println!("{}", serde_json::to_string_pretty(&resp)?);
+                } else {
+                    println!(
+                        "{} ({}){} · {} chars",
+                        resp["voice_id"].as_str().unwrap_or("?"),
+                        resp["label"].as_str().unwrap_or("?"),
+                        if resp["cached"].as_bool().unwrap_or(false) {
+                            " [cached]"
+                        } else {
+                            ""
+                        },
+                        resp["chars"].as_u64().unwrap_or(0),
+                    );
+                }
+                if !no_play && !server_play {
+                    if let Some(p) = resp["audio_path"].as_str() {
+                        if !p.is_empty() {
+                            voxd::play::play_blocking(std::path::Path::new(p))?;
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Error speaking line: {}", e);
+            }
+        }
+    }
+    
+    Ok(())
 }
 
 fn looks_like_path(s: &str) -> bool {

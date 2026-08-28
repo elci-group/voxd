@@ -7,6 +7,7 @@ pub mod alloc;
 pub mod audio;
 pub mod cache;
 pub mod config;
+pub mod context;
 pub mod elevenlabs;
 pub mod groq;
 pub mod listen;
@@ -15,8 +16,10 @@ pub mod notify;
 pub mod play;
 pub mod project;
 pub mod recap;
+pub mod router;
 pub mod server;
 pub mod state;
+pub mod trace;
 pub mod voices;
 
 use serde::{Deserialize, Serialize};

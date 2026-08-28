@@ -186,7 +186,7 @@ async fn handle_utterance(
     let settings = state.cfg.defaults;
 
     if state.cfg.mimic.enabled && state.cfg.providers.tts == SpeechProvider::Elevenlabs {
-        match crate::server::synthesize_with_mimic(state, &reply.text, &voice, &settings).await {
+        match crate::server::synthesize_with_mimic(state, &reply.text, &voice, &settings, None).await {
             Ok(Some((bytes, _))) => {
                 tokio::task::spawn_blocking(move || play::play_bytes_blocking(&bytes))
                     .await

@@ -72,6 +72,7 @@ impl MimicClient {
         }
     }
 
+    #[tracing::instrument(skip_all, fields(voice = %voice, text_len = text.len()))]
     pub async fn plan(
         &self,
         text: &str,
@@ -79,6 +80,7 @@ impl MimicClient {
         model: &str,
         settings: &Settings,
     ) -> Result<Plan> {
+        let started = std::time::Instant::now();
         let response = self
             .http
             .post(format!("{}/v1/plans", self.base))
@@ -97,6 +99,27 @@ impl MimicClient {
         }
         let plan: Plan = response.json().await.context("parse mimic plan")?;
         self.validate(&plan)?;
+
+        let missing_span_count = plan.spans.iter().filter(|s| s.kind == "missing").count();
+        let cache_hit_pct = if plan.total_chars > 0 {
+            plan.cached_chars as f64 * 100.0 / plan.total_chars as f64
+        } else {
+            0.0
+        };
+        tracing::info!(
+            target: "voxd::mimic",
+            event = "plan",
+            plan_id = %plan.plan_id,
+            total_chars = plan.total_chars,
+            cached_chars = plan.cached_chars,
+            missing_chars = plan.missing_chars,
+            cache_hit_pct,
+            span_count = plan.spans.len(),
+            cached_span_count = plan.spans.len() - missing_span_count,
+            missing_span_count,
+            elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+            "mimic plan"
+        );
         Ok(plan)
     }
 
@@ -133,7 +156,9 @@ impl MimicClient {
         Ok(())
     }
 
+    #[tracing::instrument(skip_all, fields(plan_id = %plan.plan_id))]
     pub async fn admit(&self, plan: &Plan) -> Result<(bool, bool)> {
+        let started = std::time::Instant::now();
         let output = Command::new(&self.pv_bin)
             .args([
                 "admit",
@@ -151,10 +176,24 @@ impl MimicClient {
             .context("run pv admit")?;
         let report: PvAdmission =
             serde_json::from_slice(&output.stdout).context("parse pv admission")?;
+        tracing::info!(
+            target: "voxd::mimic",
+            event = "admit",
+            plan_id = %plan.plan_id,
+            ram_admitted = report.ram.admitted,
+            storage_admitted = report.storage.admitted,
+            estimated_ram_bytes = plan.estimated_ram_bytes,
+            estimated_storage_bytes = plan.estimated_storage_bytes,
+            elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+            "mimic admit"
+        );
         Ok((report.ram.admitted, report.storage.admitted))
     }
 
+    #[tracing::instrument(skip_all, fields(plan_id = %plan, span_id = %span, bytes = pcm.len()))]
     pub async fn inject(&self, plan: &str, span: &str, pcm: Vec<u8>) -> Result<()> {
+        let started = std::time::Instant::now();
+        let bytes_len = pcm.len();
         let response = self
             .http
             .put(format!("{}/v1/plans/{plan}/spans/{span}", self.base))
@@ -166,10 +205,21 @@ impl MimicClient {
         if !response.status().is_success() {
             bail!("mimic inject HTTP {}", response.status());
         }
+        tracing::debug!(
+            target: "voxd::mimic",
+            event = "inject",
+            plan_id = %plan,
+            span_id = %span,
+            bytes = bytes_len,
+            elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+            "mimic inject span"
+        );
         Ok(())
     }
 
+    #[tracing::instrument(skip_all, fields(plan_id = %plan, persist))]
     pub async fn compose(&self, plan: &str, persist: bool) -> Result<Vec<u8>> {
+        let started = std::time::Instant::now();
         let response = self
             .http
             .post(format!(
@@ -182,6 +232,16 @@ impl MimicClient {
         if !response.status().is_success() {
             bail!("mimic compose HTTP {}", response.status());
         }
-        Ok(response.bytes().await?.to_vec())
+        let bytes = response.bytes().await?.to_vec();
+        tracing::info!(
+            target: "voxd::mimic",
+            event = "compose",
+            plan_id = %plan,
+            persist,
+            audio_bytes = bytes.len(),
+            elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+            "mimic compose"
+        );
+        Ok(bytes)
     }
 }

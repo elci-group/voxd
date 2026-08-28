@@ -1,11 +1,12 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 
-use crate::Settings;
+use crate::{Settings, SettingsPatch};
 
 const DEFAULT_BIND: &str = "127.0.0.1:17843";
 const DEFAULT_SYSTEM_VOICE: &str = "21m00Tcm4TlvDq8ikWAM"; // Rachel (premade)
@@ -34,6 +35,12 @@ pub struct Config {
     pub mimic: MimicCfg,
     #[serde(default)]
     pub recap: RecapCfg,
+    #[serde(default)]
+    pub voices: HashMap<String, VoiceProfileCfg>,
+    #[serde(default)]
+    pub routing: RoutingCfg,
+    #[serde(default)]
+    pub hotkey: HotkeyCfg,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -94,6 +101,10 @@ pub struct MimicCfg {
     pub pv_bin: String,
     #[serde(default = "d_mimic_objects")]
     pub object_root: String,
+    /// Record per-synthesis efficiency metrics in `state.db` and emit
+    /// structured `voxd::mimic::telemetry` tracing events.
+    #[serde(default = "d_true")]
+    pub telemetry_enabled: bool,
 }
 
 impl Default for MimicCfg {
@@ -104,6 +115,7 @@ impl Default for MimicCfg {
             auth_token: String::new(),
             pv_bin: d_pv_bin(),
             object_root: d_mimic_objects(),
+            telemetry_enabled: true,
         }
     }
 }
@@ -216,6 +228,109 @@ impl Default for SystemVoice {
 pub struct PoolCfg {
     #[serde(default)]
     pub voices: Vec<String>,
+}
+
+/// A named voice profile decouples voice identity from the synthesis provider.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct VoiceProfileCfg {
+    /// Optional provider override. When omitted the active `providers.tts` is used.
+    #[serde(default)]
+    pub provider: Option<SpeechProvider>,
+    /// Concrete voice id for the provider.
+    pub voice_id: String,
+    /// Human-readable label for this profile.
+    #[serde(default)]
+    pub label: String,
+    /// Optional per-profile settings override.
+    #[serde(flatten)]
+    pub settings: SettingsPatch,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum RuleScope {
+    Default,
+    Application,
+    Domain,
+    Window,
+    Explicit,
+}
+
+impl std::str::FromStr for RuleScope {
+    type Err = anyhow::Error;
+    fn from_str(value: &str) -> Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "default" => Ok(Self::Default),
+            "application" | "app" => Ok(Self::Application),
+            "domain" => Ok(Self::Domain),
+            "window" => Ok(Self::Window),
+            "explicit" => Ok(Self::Explicit),
+            _ => bail!("rule scope must be default, application, domain, window, or explicit"),
+        }
+    }
+}
+
+impl std::fmt::Display for RuleScope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Default => f.write_str("default"),
+            Self::Application => f.write_str("application"),
+            Self::Domain => f.write_str("domain"),
+            Self::Window => f.write_str("window"),
+            Self::Explicit => f.write_str("explicit"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoutingRuleCfg {
+    pub scope: RuleScope,
+    pub pattern: String,
+    pub voice: String,
+    #[serde(default)]
+    pub priority: i32,
+    #[serde(default = "d_true")]
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoutingCfg {
+    #[serde(default = "d_routing_default_voice")]
+    pub default_voice: String,
+    #[serde(default)]
+    pub rules: Vec<RoutingRuleCfg>,
+}
+
+impl Default for RoutingCfg {
+    fn default() -> Self {
+        Self {
+            default_voice: d_routing_default_voice(),
+            rules: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HotkeyCfg {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "d_hotkey_device")]
+    pub device: String,
+    #[serde(default = "d_hotkey_speak")]
+    pub speak_selection: String,
+    #[serde(default = "d_hotkey_stop")]
+    pub stop: String,
+}
+
+impl Default for HotkeyCfg {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            device: d_hotkey_device(),
+            speak_selection: d_hotkey_speak(),
+            stop: d_hotkey_stop(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -370,6 +485,18 @@ fn d_recap_poll() -> u64 {
 fn d_claude_projects_dir() -> String {
     "~/.claude/projects".into()
 }
+fn d_routing_default_voice() -> String {
+    "system".into()
+}
+fn d_hotkey_device() -> String {
+    "auto".into()
+}
+fn d_hotkey_speak() -> String {
+    "LEFTMETA+LEFTSHIFT+V".into()
+}
+fn d_hotkey_stop() -> String {
+    "LEFTMETA+LEFTSHIFT+S".into()
+}
 
 // ---- path helpers ---------------------------------------------------------
 
@@ -483,10 +610,42 @@ impl Config {
             "mimic.auth_token" => self.mimic.auth_token = value.to_string(),
             "mimic.pv_bin" => self.mimic.pv_bin = value.to_string(),
             "mimic.object_root" => self.mimic.object_root = value.to_string(),
+            "mimic.telemetry_enabled" => self.mimic.telemetry_enabled = parse_bool(key, value)?,
             "recap.enabled" => self.recap.enabled = parse_bool(key, value)?,
             "recap.poll_interval_secs" => self.recap.poll_interval_secs = parse_u64(key, value)?,
             "recap.claude_projects_dir" => self.recap.claude_projects_dir = value.to_string(),
-            _ => bail!("unknown config key {key}"),
+            "routing.default_voice" => self.routing.default_voice = value.to_string(),
+            "hotkey.enabled" => self.hotkey.enabled = parse_bool(key, value)?,
+            "hotkey.device" => self.hotkey.device = value.to_string(),
+            "hotkey.speak_selection" => self.hotkey.speak_selection = value.to_string(),
+            "hotkey.stop" => self.hotkey.stop = value.to_string(),
+            _ => {
+                // voices.<name>.voice_id / provider / label / settings.*
+                if let Some(rest) = key.strip_prefix("voices.") {
+                    let mut parts = rest.splitn(3, '.');
+                    let name = parts.next().ok_or_else(|| anyhow!("invalid voice key {key}"))?;
+                    let sub = parts.next().ok_or_else(|| anyhow!("invalid voice key {key}"))?;
+                    let profile = self.voices.entry(name.to_string()).or_default();
+                    match sub {
+                        "voice_id" => profile.voice_id = value.to_string(),
+                        "provider" => {
+                            profile.provider = if value.trim().is_empty() {
+                                None
+                            } else {
+                                Some(value.parse()?)
+                            }
+                        }
+                        "label" => profile.label = value.to_string(),
+                        "settings" => {
+                            let field = parts.next().ok_or_else(|| anyhow!("invalid voice settings key {key}"))?;
+                            apply_voice_setting(&mut profile.settings, field, value)?;
+                        }
+                        _ => bail!("unknown voice field {sub}"),
+                    }
+                    return Ok(());
+                }
+                bail!("unknown config key {key}")
+            }
         }
         Ok(())
     }
@@ -515,7 +674,7 @@ pub fn load_or_init(path: &Path) -> Result<Config> {
     }
     // Backfill newly-added sections so the on-disk file reflects current
     // defaults and remains user-tunable.
-    if ["[listen]", "[groq]", "[providers]", "[recap]"]
+    if ["[listen]", "[groq]", "[providers]", "[recap]", "[routing]", "[hotkey]", "[mimic]"]
         .iter()
         .any(|section| !raw.contains(section))
         && !wrote
@@ -622,4 +781,16 @@ fn parse_u64(key: &str, value: &str) -> Result<u64> {
     value
         .parse::<u64>()
         .with_context(|| format!("{key} must be an unsigned integer"))
+}
+
+fn apply_voice_setting(settings: &mut SettingsPatch, field: &str, value: &str) -> Result<()> {
+    match field {
+        "stability" => settings.stability = Some(parse_f32(field, value)?),
+        "similarity_boost" => settings.similarity_boost = Some(parse_f32(field, value)?),
+        "style" => settings.style = Some(parse_f32(field, value)?),
+        "speed" => settings.speed = Some(parse_f32(field, value)?),
+        "use_speaker_boost" => settings.use_speaker_boost = Some(parse_bool(field, value)?),
+        _ => bail!("unknown voice setting field {field}"),
+    }
+    Ok(())
 }

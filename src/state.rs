@@ -3,6 +3,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
+use serde::{Deserialize, Serialize};
 
 use crate::{ProjectRow, Settings, VoiceInfo};
 
@@ -28,6 +29,22 @@ CREATE TABLE IF NOT EXISTS utterances (
   voice_id TEXT NOT NULL,
   chars INTEGER NOT NULL,
   cached INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS mimic_syntheses (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts TEXT NOT NULL,
+  plan_id TEXT,
+  project_id TEXT,
+  voice_id TEXT NOT NULL,
+  model_id TEXT NOT NULL,
+  total_chars INTEGER NOT NULL,
+  cached_chars INTEGER NOT NULL,
+  missing_chars INTEGER NOT NULL,
+  provider_chars INTEGER NOT NULL,
+  ram_admitted INTEGER NOT NULL,
+  storage_admitted INTEGER NOT NULL,
+  outcome TEXT NOT NULL,
+  elapsed_ms REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS voices (
   voice_id TEXT PRIMARY KEY,
@@ -218,4 +235,84 @@ impl Db {
         }
         Ok(out)
     }
+
+    pub fn log_mimic_synthesis(&self, r: &MimicSynthesisRecord<'_>) -> Result<()> {
+        let c = self.conn();
+        c.execute(
+            "INSERT INTO mimic_syntheses
+             (ts, plan_id, project_id, voice_id, model_id, total_chars, cached_chars,
+              missing_chars, provider_chars, ram_admitted, storage_admitted, outcome, elapsed_ms)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+            params![
+                now(),
+                r.plan_id,
+                r.project_id,
+                r.voice_id,
+                r.model_id,
+                r.total_chars as i64,
+                r.cached_chars as i64,
+                r.missing_chars as i64,
+                r.provider_chars as i64,
+                r.ram_admitted as i64,
+                r.storage_admitted as i64,
+                r.outcome,
+                r.elapsed_ms,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn mimic_efficiency_summary(&self) -> Result<MimicEfficiencySummary> {
+        let c = self.conn();
+        let summary = c.query_row(
+            "SELECT
+               COUNT(*) AS total,
+               COALESCE(SUM(CASE outcome WHEN 'composed' THEN 1 ELSE 0 END), 0) AS composed,
+               COALESCE(SUM(CASE outcome WHEN 'ram_denied' THEN 1 ELSE 0 END), 0) AS ram_denied,
+               COALESCE(SUM(CASE outcome WHEN 'error' THEN 1 ELSE 0 END), 0) AS error,
+               COALESCE(SUM(CASE WHEN total_chars > 0 THEN (total_chars - provider_chars) * 100.0 / total_chars ELSE 0.0 END) / COUNT(*), 0.0) AS avg_savings_pct,
+               COALESCE(SUM(CASE WHEN total_chars > 0 THEN cached_chars * 100.0 / total_chars ELSE 0.0 END) / COUNT(*), 0.0) AS avg_cache_hit_pct
+             FROM mimic_syntheses",
+            [],
+            |row| {
+                Ok(MimicEfficiencySummary {
+                    total: row.get(0)?,
+                    composed: row.get(1)?,
+                    ram_denied: row.get(2)?,
+                    error: row.get(3)?,
+                    avg_savings_pct: row.get(4)?,
+                    avg_cache_hit_pct: row.get(5)?,
+                })
+            },
+        )?;
+        Ok(summary)
+    }
+}
+
+/// A single Mimic synthesis observation ready for persistence.
+#[derive(Debug, Clone)]
+pub struct MimicSynthesisRecord<'a> {
+    pub plan_id: Option<&'a str>,
+    pub project_id: Option<&'a str>,
+    pub voice_id: &'a str,
+    pub model_id: &'a str,
+    pub total_chars: usize,
+    pub cached_chars: usize,
+    pub missing_chars: usize,
+    pub provider_chars: usize,
+    pub ram_admitted: bool,
+    pub storage_admitted: bool,
+    pub outcome: &'a str,
+    pub elapsed_ms: f64,
+}
+
+/// Rolling aggregate efficiency metrics for Mimic-backed syntheses.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct MimicEfficiencySummary {
+    pub total: i64,
+    pub composed: i64,
+    pub ram_denied: i64,
+    pub error: i64,
+    pub avg_savings_pct: f64,
+    pub avg_cache_hit_pct: f64,
 }

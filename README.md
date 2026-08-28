@@ -97,7 +97,7 @@ mixed configuration such as Groq Whisper STT with ElevenLabs TTS is supported.
 
 ```bash
 voxd-cli speak --system "task complete"            # unifying system voice
-echo "build done" | voxd-cli speak --project .     # this repo's voice
+voxd-cli speak --project . "build done"           # this repo's voice
 voxd-cli speak --project . --voice <id> "override once"
 voxd-cli voices                                     # list available voices
 voxd-cli projects                                   # list bindings
@@ -106,6 +106,25 @@ voxd-cli unassign .                                 # remove a binding
 voxd-cli status                                     # uptime, cache, key, counts
 voxd-cli logs | voxd-cli stop
 ```
+
+### Piped dictation
+
+For batch text, pipe to stdin (reads all input before speaking):
+
+```bash
+echo "build done" | voxd-cli speak --project .
+cat message.txt | voxd-cli speak --system
+```
+
+For real-time dictation where each line is spoken as it arrives, use `--stream`:
+
+```bash
+echo -e "Line one\nLine two\nLine three" | voxd-cli speak --system --stream
+tail -f log.txt | voxd-cli speak --project . --stream --no-play
+cat document.txt | voxd-cli speak --system --stream
+```
+
+This is useful for live log monitoring, real-time text processing, or streaming text sources where you want immediate audio feedback. The stream mode processes each line independently, respecting all the usual speak options (voice selection, project binding, caching, etc.).
 
 A "personality" is a project row's `{voice_id, label, stability,
 similarity_boost, style, use_speaker_boost}` (text is spoken verbatim — no LLM).
@@ -319,6 +338,46 @@ turn, not a distinct "you were away" summary — so they still rely on the
 manual `voxd-cli speak` skill described below. Adding a harness here means
 adding a `poll_*` function in `src/recap.rs`; disable the whole watcher with
 `voxd-cli config set recap.enabled false`.
+
+## Mimic (optional TTS caching layer)
+
+When `[mimic].enabled = true` and `providers.tts = "elevenlabs"`, ElevenLabs
+synthesis is routed through mimic (a separate, sibling project running as a
+`mimicd` daemon): mimic splits the request text into cached/missing spans,
+voxd only pays ElevenLabs for the missing spans, and mimic composes the final
+audio (`synthesize_with_mimic` in `src/server.rs`). This sits *behind* voxd's
+own whole-text content-hash cache (`src/cache.rs`), which short-circuits exact
+repeats before mimic is ever consulted. `mimicd` runs a mandatory RAM/storage
+admission check (via `pv admit`) before any provider call; a RAM denial
+degrades that reply to a text-only desktop notification instead of audio.
+
+Structured tracing for this path (`voxd::mimic` / `voxd::speak` targets) is
+always emitted through the normal `tracing` subscriber; set
+`VOXD_TRACE_JSONL=<path>` to also append one flat JSON object per event to a
+file — useful for tailing plan/admission/compose behavior in production, and
+for `tools/mimic_bench.py` below.
+
+### Mimic efficiency benchmark
+
+```bash
+python3 tools/mimic_bench.py                 # mock TTS backend, free & repeatable
+python3 tools/mimic_bench.py --real-tts       # spend real ElevenLabs credits
+python3 tools/mimic_bench.py --passes 3 --out /tmp/report
+```
+
+Spins up a throwaway voxd instance against the real, already-running `mimicd`,
+drives a built-in corpus shaped like voxd's actual traffic (recap narrations,
+`listen` intent replies, CLI-speak acknowledgements) through `/speak`, and
+reports the fraction of characters mimic keeps off the ElevenLabs bill — split
+into an *end-to-end* view (voxd's own cache included, as in production) and a
+*mimic-isolation* view (`no_cache: true`, isolating mimic's own span cache),
+each across a cold and a warm pass. It cross-checks its own client-observed
+results against the `VOXD_TRACE_JSONL` trace and reports mimic's RAM/storage
+admission-denial rate, since a denial silently disables the caching benefit
+for that request. Reports land in `tools/mimic_bench_reports/` as JSON +
+Markdown. `VOXD_ELEVENLABS_BASE_URL` (the mock-backend seam) and
+`VOXD_TRACE_JSONL` are test/benchmark-only env vars — never set them for
+normal operation.
 
 ## Files
 

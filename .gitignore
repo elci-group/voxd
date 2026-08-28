@@ -1,3 +1,5 @@
 /target
 .kaptaind/
+.lwoodz/
 .env
+/tools/mimic_bench_reports/

@@ -19,7 +19,7 @@ use crate::cache::AudioCache;
 use crate::config::{resolve_elevenlabs_api_key, resolve_groq_api_key, Config, SpeechProvider};
 use crate::elevenlabs::ElevenClient;
 use crate::groq::GroqClient;
-use crate::state::Db;
+use crate::state::{Db, MimicSynthesisRecord};
 use crate::{play, project, ProjectRow, Settings, SettingsPatch};
 
 pub struct AppState {
@@ -234,6 +234,7 @@ async fn handle_status(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     let utterances = s.db.utterance_count().unwrap_or(0);
     let projects = s.db.list_projects().map(|v| v.len()).unwrap_or(0);
     let cache_bytes = s.cache.total_bytes();
+    let mimic_summary = s.db.mimic_efficiency_summary().unwrap_or_default();
     Json(serde_json::json!({
         "ok": true,
         "uptime_secs": uptime,
@@ -256,6 +257,7 @@ async fn handle_status(State(s): State<Arc<AppState>>) -> impl IntoResponse {
             SpeechProvider::Elevenlabs => &s.cfg.listen.stt_model,
             SpeechProvider::Groq => &s.cfg.groq.stt_model,
         },
+        "mimic": mimic_summary,
     }))
 }
 
@@ -330,6 +332,7 @@ async fn handle_speak(State(s): State<Arc<AppState>>, Json(req): Json<SpeakReq>)
 }
 
 async fn speak_core(s: &AppState, req: SpeakReq) -> Result<SpeakResp> {
+    let started = std::time::Instant::now();
     let text = req.text.trim().to_string();
     if text.is_empty() {
         return Err(anyhow!("empty text"));
@@ -381,7 +384,7 @@ async fn speak_core(s: &AppState, req: SpeakReq) -> Result<SpeakResp> {
         }
         None => {
             if s.cfg.mimic.enabled && s.cfg.providers.tts == SpeechProvider::Elevenlabs {
-                match synthesize_with_mimic(s, &text, &voice_id, &settings).await {
+                match synthesize_with_mimic(s, &text, &voice_id, &settings, project_id.as_deref()).await {
                     Ok(Some((bytes, provider_chars))) => {
                         let path = s.cache.put_wav(&key, &bytes)?;
                         (false, path, false, provider_chars)
@@ -413,6 +416,29 @@ async fn speak_core(s: &AppState, req: SpeakReq) -> Result<SpeakResp> {
 
     s.db.log_utterance(project_id.as_deref(), &voice_id, chars, cached)?;
 
+    let path = if cached {
+        "outer_cache"
+    } else if visual_only {
+        "visual_only"
+    } else if s.cfg.mimic.enabled && s.cfg.providers.tts == SpeechProvider::Elevenlabs {
+        "mimic"
+    } else {
+        "direct"
+    };
+    tracing::info!(
+        target: "voxd::speak",
+        event = "speak",
+        path,
+        chars,
+        provider_chars,
+        cached,
+        visual_only,
+        no_cache = req.no_cache,
+        project_id = project_id.as_deref().unwrap_or(""),
+        elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+        "speak request"
+    );
+
     if req.play && !visual_only {
         play::spawn_play(&audio_path);
     }
@@ -431,28 +457,174 @@ async fn speak_core(s: &AppState, req: SpeakReq) -> Result<SpeakResp> {
 
 /// Execute the mandatory Mimic manifest and pv admission flow. `None` means
 /// RAM was denied and the caller must use a visual-only response.
+#[tracing::instrument(skip_all, fields(text_len = text.len(), voice_id = %voice_id))]
 pub(crate) async fn synthesize_with_mimic(
     s: &AppState,
     text: &str,
     voice_id: &str,
     settings: &Settings,
+    project_id: Option<&str>,
 ) -> Result<Option<(Vec<u8>, usize)>> {
+    let started = std::time::Instant::now();
+    let telemetry_enabled = s.cfg.mimic.telemetry_enabled;
+    let voice_id_owned = voice_id.to_string();
+    let model_id = s.cfg.elevenlabs.model_id.clone();
+    let project_id_owned = project_id.map(|p| p.to_string());
+    let plan_id: String;
+
+    let mut record = MimicSynthesisRecord {
+        plan_id: None,
+        project_id: project_id_owned.as_deref(),
+        voice_id: &voice_id_owned,
+        model_id: &model_id,
+        total_chars: 0,
+        cached_chars: 0,
+        missing_chars: 0,
+        provider_chars: 0,
+        ram_admitted: false,
+        storage_admitted: false,
+        outcome: "error",
+        elapsed_ms: 0.0,
+    };
+
+    let finalize = |r: &mut MimicSynthesisRecord| {
+        r.elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+        if telemetry_enabled {
+            record_mimic_telemetry(&s.db, r);
+        }
+    };
+
     let mimic =
         crate::mimic::MimicClient::new(s.http.clone(), &s.cfg.mimic, &s.cfg.server.auth_token);
-    let plan = mimic
-        .plan(text, voice_id, &s.cfg.elevenlabs.model_id, settings)
-        .await?;
-    let (ram_ok, storage_ok) = mimic.admit(&plan).await?;
+
+    let plan = match mimic.plan(text, &voice_id_owned, &model_id, settings).await {
+        Ok(p) => p,
+        Err(e) => {
+            finalize(&mut record);
+            return Err(e);
+        }
+    };
+
+    plan_id = plan.plan_id.clone();
+    record.plan_id = Some(&plan_id);
+    record.total_chars = plan.total_chars;
+    record.cached_chars = plan.cached_chars;
+    record.missing_chars = plan.missing_chars;
+
+    let (ram_ok, storage_ok) = match mimic.admit(&plan).await {
+        Ok(a) => a,
+        Err(e) => {
+            finalize(&mut record);
+            return Err(e);
+        }
+    };
+    record.ram_admitted = ram_ok;
+    record.storage_admitted = storage_ok;
+
     if !ram_ok {
+        record.outcome = "ram_denied";
+        tracing::info!(
+            target: "voxd::mimic",
+            event = "synthesize",
+            plan_id = %plan_id,
+            outcome = "ram_denied",
+            total_chars = plan.total_chars,
+            cached_chars = plan.cached_chars,
+            missing_chars = plan.missing_chars,
+            ram_admitted = ram_ok,
+            storage_admitted = storage_ok,
+            elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+            "mimic synthesize"
+        );
+        finalize(&mut record);
         return Ok(None);
     }
-    let eleven = s.eleven()?;
+
+    let eleven = match s.eleven() {
+        Ok(c) => c,
+        Err(e) => {
+            finalize(&mut record);
+            return Err(e);
+        }
+    };
+
     for span in plan.spans.iter().filter(|span| span.kind == "missing") {
-        let pcm = eleven.speak_pcm(&span.text, voice_id, settings).await?;
-        mimic.inject(&plan.plan_id, &span.span_id, pcm).await?;
+        let pcm = match eleven.speak_pcm(&span.text, &voice_id_owned, settings).await {
+            Ok(p) => p,
+            Err(e) => {
+                finalize(&mut record);
+                return Err(e);
+            }
+        };
+        if let Err(e) = mimic.inject(&plan_id, &span.span_id, pcm).await {
+            finalize(&mut record);
+            return Err(e);
+        }
     }
-    let audio = mimic.compose(&plan.plan_id, storage_ok).await?;
+
+    let audio = match mimic.compose(&plan_id, storage_ok).await {
+        Ok(a) => a,
+        Err(e) => {
+            finalize(&mut record);
+            return Err(e);
+        }
+    };
+
+    record.provider_chars = plan.missing_chars;
+    record.outcome = "composed";
+    tracing::info!(
+        target: "voxd::mimic",
+        event = "synthesize",
+        plan_id = %plan_id,
+        outcome = "composed",
+        total_chars = plan.total_chars,
+        cached_chars = plan.cached_chars,
+        missing_chars = plan.missing_chars,
+        ram_admitted = ram_ok,
+        storage_admitted = storage_ok,
+        elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+        "mimic synthesize"
+    );
+    finalize(&mut record);
     Ok(Some((audio, plan.missing_chars)))
+}
+
+/// Persist a Mimic synthesis record and emit a structured telemetry event.
+fn record_mimic_telemetry(db: &Db, r: &MimicSynthesisRecord<'_>) {
+    if let Err(e) = db.log_mimic_synthesis(r) {
+        tracing::warn!(error = %e, "failed to persist mimic telemetry");
+    }
+
+    let cache_hit_pct = if r.total_chars > 0 {
+        r.cached_chars as f64 * 100.0 / r.total_chars as f64
+    } else {
+        0.0
+    };
+    let savings_pct = if r.total_chars > 0 {
+        (r.total_chars - r.provider_chars) as f64 * 100.0 / r.total_chars as f64
+    } else {
+        0.0
+    };
+
+    tracing::info!(
+        target: "voxd::mimic::telemetry",
+        event = "mimic_telemetry",
+        plan_id = r.plan_id.unwrap_or(""),
+        project_id = r.project_id.unwrap_or(""),
+        voice_id = r.voice_id,
+        model_id = r.model_id,
+        total_chars = r.total_chars,
+        cached_chars = r.cached_chars,
+        missing_chars = r.missing_chars,
+        provider_chars = r.provider_chars,
+        ram_admitted = r.ram_admitted,
+        storage_admitted = r.storage_admitted,
+        outcome = r.outcome,
+        cache_hit_pct,
+        savings_pct,
+        elapsed_ms = r.elapsed_ms,
+        "mimic synthesis telemetry"
+    );
 }
 
 /// Resolve a project by path (or cwd), allocating and persisting a voice on
