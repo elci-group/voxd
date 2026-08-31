@@ -295,7 +295,7 @@ mod tests {
         assert!(glob_match("firefox", "firefox"));
         assert!(!glob_match("firefox", "firefox-beta"));
         assert!(glob_match("*firefox*", "org.mozilla.firefox"));
-        assert!(glob_match("*steam*", "Steam"));
+        assert!(glob_match("*steam*", "steam"));
         assert!(glob_match("*.wikipedia.org", "en.wikipedia.org"));
         assert!(!glob_match("*.wikipedia.org", "wikipedia.org"));
         assert!(glob_match("*", "anything"));

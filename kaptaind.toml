@@ -37,6 +37,9 @@ min_commit_interval = 10
 command = "cargo test"
 required = true
 
+[trust]
+execution = "trusted"
+
 # [staging]
 # mode = "cluster"    # "cluster" (default, only observed changes), "pattern",
 #                     # or "all" (git add -A; warns at startup, aborts on
