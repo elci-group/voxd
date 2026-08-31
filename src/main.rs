@@ -1,3 +1,4 @@
+mod curly_expand;
 use std::fs::{self, OpenOptions};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -19,7 +20,7 @@ struct Args {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn __curly_original_main() -> Result<()> {
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
 
@@ -90,4 +91,107 @@ fn spawn_detached(cfg_path: &PathBuf) -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let raw_args: Vec<String> = std::env::args().collect();
+    let mut positions: Vec<usize> = Vec::new();
+    let mut fields: Vec<Vec<String>> = Vec::new();
+    for (__i, __a) in raw_args.iter().enumerate() {
+        if __a == "--config" {
+            if let Some(__v) = raw_args.get(__i + 1) {
+                positions.push(__i + 1);
+                fields.push(curly_expand::expand_or_literal(__v));
+            }
+            break;
+        } else if let Some(__v) = __a.strip_prefix("--config=") {
+            positions.push(__i);
+            fields.push(
+                curly_expand::expand_or_literal(__v)
+                    .into_iter()
+                    .map(|v| format!("--config={}", v))
+                    .collect(),
+            );
+            break;
+        }
+    }
+    for (__i, __a) in raw_args.iter().enumerate() {
+        if __a == "--config" {
+            if let Some(__v) = raw_args.get(__i + 1) {
+                positions.push(__i + 1);
+                fields.push(curly_expand::expand_or_literal(__v));
+            }
+            break;
+        } else if let Some(__v) = __a.strip_prefix("--config=") {
+            positions.push(__i);
+            fields.push(
+                curly_expand::expand_or_literal(__v)
+                    .into_iter()
+                    .map(|v| format!("--config={}", v))
+                    .collect(),
+            );
+            break;
+        }
+    }
+    for (__i, __a) in raw_args.iter().enumerate() {
+        if __a == "--voxd-bin" {
+            if let Some(__v) = raw_args.get(__i + 1) {
+                positions.push(__i + 1);
+                fields.push(curly_expand::expand_or_literal(__v));
+            }
+            break;
+        } else if let Some(__v) = __a.strip_prefix("--voxd-bin=") {
+            positions.push(__i);
+            fields.push(
+                curly_expand::expand_or_literal(__v)
+                    .into_iter()
+                    .map(|v| format!("--voxd-bin={}", v))
+                    .collect(),
+            );
+            break;
+        }
+    }
+    for (__i, __a) in raw_args.iter().enumerate() {
+        if __a == "--out" {
+            if let Some(__v) = raw_args.get(__i + 1) {
+                positions.push(__i + 1);
+                fields.push(curly_expand::expand_or_literal(__v));
+            }
+            break;
+        } else if let Some(__v) = __a.strip_prefix("--out=") {
+            positions.push(__i);
+            fields.push(
+                curly_expand::expand_or_literal(__v)
+                    .into_iter()
+                    .map(|v| format!("--out={}", v))
+                    .collect(),
+            );
+            break;
+        }
+    }
+
+    if fields.is_empty() || fields.iter().all(|f| f.len() <= 1) {
+        return Ok(__curly_original_main()?);
+    }
+
+    let combos = curly_expand::cartesian(&fields);
+    let exe = std::env::current_exe().expect("resolve current exe");
+    let mut had_failure = false;
+    for combo in &combos {
+        let mut new_args = raw_args.clone();
+        for (slot, value) in positions.iter().zip(combo.iter()) {
+            new_args[*slot] = value.clone();
+        }
+        let status = std::process::Command::new(&exe)
+            .args(&new_args[1..])
+            .status()
+            .expect("failed to re-exec self");
+        if !status.success() {
+            had_failure = true;
+        }
+    }
+    if had_failure {
+        std::process::exit(1);
+    }
+    Ok(())
 }
