@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import copy
+from curly_expand import expand_or_literal, cartesian
 """Benchmark how well voxd's mimic integration keeps TTS-provider characters
 ("tokens") off the bill.
 
@@ -562,71 +564,78 @@ def main():
     ap.add_argument("--out", default=None, help="report output directory (default: tools/mimic_bench_reports)")
     args = ap.parse_args()
 
-    real_cfg = load_real_config()
-    voxd_bin = find_voxd_bin(args.voxd_bin)
-    out_dir = Path(args.out) if args.out else REPO_ROOT / "tools" / "mimic_bench_reports"
-    out_dir.mkdir(parents=True, exist_ok=True)
+    __curly_voxd_bin = expand_or_literal(args.voxd_bin) if args.voxd_bin is not None else [None]
+    __curly_out = expand_or_literal(args.out) if args.out is not None else [None]
+    for __curly_v_voxd_bin in __curly_voxd_bin:
+        for __curly_v_out in __curly_out:
+            args = copy.copy(args)
+            args.voxd_bin = __curly_v_voxd_bin
+            args.out = __curly_v_out
+            real_cfg = load_real_config()
+            voxd_bin = find_voxd_bin(args.voxd_bin)
+            out_dir = Path(args.out) if args.out else REPO_ROOT / "tools" / "mimic_bench_reports"
+            out_dir.mkdir(parents=True, exist_ok=True)
 
-    with tempfile.TemporaryDirectory(prefix="mimic_bench_") as tmp:
-        work_dir = Path(tmp)
-        eleven_ctx = contextlib.nullcontext(None) if args.real_tts else mock_eleven_server()
-        with eleven_ctx as eleven_base_url:
-            instance = VoxdInstance(voxd_bin, real_cfg, work_dir, eleven_base_url)
-            try:
-                instance.wait_healthy()
+            with tempfile.TemporaryDirectory(prefix="mimic_bench_") as tmp:
+                work_dir = Path(tmp)
+                eleven_ctx = contextlib.nullcontext(None) if args.real_tts else mock_eleven_server()
+                with eleven_ctx as eleven_base_url:
+                    instance = VoxdInstance(voxd_bin, real_cfg, work_dir, eleven_base_url)
+                    try:
+                        instance.wait_healthy()
 
-                nonce_a = uuid.uuid4().hex[:8]
-                nonce_b = uuid.uuid4().hex[:8]
-                corpus_a = build_corpus(nonce_a, args.seed)
-                corpus_b = build_corpus(nonce_b, args.seed)
+                        nonce_a = uuid.uuid4().hex[:8]
+                        nonce_b = uuid.uuid4().hex[:8]
+                        corpus_a = build_corpus(nonce_a, args.seed)
+                        corpus_b = build_corpus(nonce_b, args.seed)
 
-                all_records = []
-                all_records += run_scenario(instance, "end_to_end", corpus_a, args.passes, no_cache=False)
-                all_records += run_scenario(instance, "mimic_isolation", corpus_b, args.passes, no_cache=True)
+                        all_records = []
+                        all_records += run_scenario(instance, "end_to_end", corpus_a, args.passes, no_cache=False)
+                        all_records += run_scenario(instance, "mimic_isolation", corpus_b, args.passes, no_cache=True)
 
-                trace_events = instance.read_trace()
-            finally:
-                instance.shutdown()
+                        trace_events = instance.read_trace()
+                    finally:
+                        instance.shutdown()
 
-    mismatches = cross_check(all_records, trace_events)
-    admission = admission_stats(trace_events)
+            mismatches = cross_check(all_records, trace_events)
+            admission = admission_stats(trace_events)
 
-    scenarios = {}
-    for name in ("end_to_end", "mimic_isolation"):
-        scenarios[name] = summarize_scenario([r for r in all_records if r["scenario"] == name])
+            scenarios = {}
+            for name in ("end_to_end", "mimic_isolation"):
+                scenarios[name] = summarize_scenario([r for r in all_records if r["scenario"] == name])
 
-    meta = {
-        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "voxd_bin": str(voxd_bin),
-        "mimic_url": real_cfg["mimic"]["url"],
-        "real_tts": args.real_tts,
-        "passes": args.passes,
-    }
+            meta = {
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "voxd_bin": str(voxd_bin),
+                "mimic_url": real_cfg["mimic"]["url"],
+                "real_tts": args.real_tts,
+                "passes": args.passes,
+            }
 
-    report_id = int(time.time())
-    json_path = out_dir / f"bench-{report_id}.json"
-    md_path = out_dir / f"bench-{report_id}.md"
-    json_path.write_text(
-        json.dumps(
-            {
-                "meta": meta,
-                "scenarios": scenarios,
-                "mismatches": mismatches,
-                "admission": admission,
-                "records": all_records,
-            },
-            indent=2,
-        )
-    )
-    report_text = render_report(meta, scenarios, mismatches, admission)
-    md_path.write_text(report_text)
+            report_id = int(time.time())
+            json_path = out_dir / f"bench-{report_id}.json"
+            md_path = out_dir / f"bench-{report_id}.md"
+            json_path.write_text(
+                json.dumps(
+                    {
+                        "meta": meta,
+                        "scenarios": scenarios,
+                        "mismatches": mismatches,
+                        "admission": admission,
+                        "records": all_records,
+                    },
+                    indent=2,
+                )
+            )
+            report_text = render_report(meta, scenarios, mismatches, admission)
+            md_path.write_text(report_text)
 
-    print(report_text)
-    print(f"\nfull results: {json_path}")
-    print(f"report:       {md_path}")
+            print(report_text)
+            print(f"\nfull results: {json_path}")
+            print(f"report:       {md_path}")
 
-    if mismatches:
-        sys.exit(2)
+            if mismatches:
+                sys.exit(2)
 
 
 if __name__ == "__main__":
